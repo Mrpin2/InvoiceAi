@@ -16,9 +16,6 @@ import os
 # ---------- Load Animations ----------
 hello_lottie = "https://raw.githubusercontent.com/Mrpin2/InvoiceAi/refs/heads/main/Animation%20-%201749845212531.json"  # waving bot
 completed_lottie = "https://raw.githubusercontent.com/Mrpin2/InvoiceAi/refs/heads/main/Animation%20-%201749845303699.json"  # completion animation
-rocket_lottie = "https://assets2.lottiefiles.com/packages/lf20_ygzjzv.json"
-pop_lottie = "https://assets10.lottiefiles.com/packages/lf20_qp1q7mct.json"
-balloons_lottie = "https://assets9.lottiefiles.com/packages/lf20_jtbfg2nb.json"
 processing_gif_url = "https://raw.githubusercontent.com/Mrpin2/InvoiceAi/main/processing.gif"
 
 def load_lottie_json_safe(url):
