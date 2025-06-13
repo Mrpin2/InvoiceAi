@@ -14,8 +14,8 @@ import tempfile
 import os
 
 # ---------- Load Animations ----------
-hello_lottie = "https://raw.githubusercontent.com/Mrpin2/InvoiceAi/refs/heads/main/Animation%20-%201749845212531.json"  # waving bot
-completed_lottie = "https://raw.githubusercontent.com/Mrpin2/InvoiceAi/refs/heads/main/Animation%20-%201749845303699.json"  # completion animation
+hello_lottie = "https://raw.githubusercontent.com/Mrpin2/InvoiceAi/refs/heads/main/Animation%20-%201749845212531.json"
+completed_lottie = "https://raw.githubusercontent.com/Mrpin2/InvoiceAi/refs/heads/main/Animation%20-%201749845303699.json"
 
 def load_lottie_json_safe(url):
     try:
@@ -74,13 +74,49 @@ client = OpenAI(api_key=openai_api_key)
 
 # ---------- Extraction Prompt ----------
 main_prompt = """
-You are a professional assistant. Read this scanned document and extract the following:
+You are an intelligent invoice assistant. Analyze the attached document and extract structured invoice data only if it is a valid invoice. If it's clearly not an invoice (e.g., bank statement or request letter), return exactly:
+NOT AN INVOICE
 
-Vendor Name, Invoice No, GSTIN, HSN/SAC, Buyer Name, Place of Supply, Invoice Date, Expense Ledger,
-GST Type, Tax Rate, Basic Amount, CGST, SGST, IGST, Total Payable, Narration, GST Input Eligible, TDS Applicable, TDS Rate
+If valid, extract and return the following details clearly and precisely, adapting to the invoice's country and structure:
 
-If it's a valid invoice, respond with a single comma-separated line in that exact order (no labels, no newlines, no extra words).
-If the file is clearly NOT a GST invoice (e.g. bank statement), only then say:
+1. Date Format: Normalize all dates to DD/MM/YYYY regardless of source region (e.g., 06/02/2025 even if in US MM/DD/YYYY format).
+2. Identifiers:
+   - India: Extract GSTIN, SAC/HSN codes.
+   - US/EU: Extract EIN/VAT if shown.
+   - If no tax ID is visible, leave blank.
+3. Amounts:
+   - Total Payable (final invoice value)
+   - Basic Amount (before taxes)
+   - Tax components:
+     - CGST, SGST, IGST (India)
+     - Sales Tax or VAT (US/EU, map into IGST)
+   - Tax Rate (in %)
+   - Represent zero values as 0.0
+4. Parties:
+   - Vendor Name
+   - Buyer Name
+   - Place of Supply or jurisdiction (State/Region)
+5. Invoice Details:
+   - Invoice Number
+   - Invoice Date
+   - Narration (brief description of goods/services)
+6. Classification & Tax:
+   - Suggested Expense Ledger (e.g., 'Professional Fees', 'Software Subscription', 'Trademark Filing')
+   - GST Input Eligibility: Yes, No, or Uncertain
+   - TDS Applicability: e.g., Yes - Section 194J, No, Uncertain
+   - RCM (Reverse Charge Mechanism): Yes, No, Uncertain
+7. Missing Data Handling:
+   - If a required field is missing, return "MISSING"
+   - If optional, leave it as an empty string ""
+   - Never make up values. Use only what is explicitly visible.
+
+Return a single comma-separated line, in this exact order:
+
+Vendor Name, Invoice No, Tax ID (GSTIN/EIN/VAT), HSN/SAC, Buyer Name, Place of Supply, Invoice Date, Expense Ledger, Tax Type, Tax Rate, Basic Amount, CGST, SGST, IGST/Sales Tax, Total Payable, Narration, GST Input Eligible, TDS Applicable, TDS Rate
+
+Do not include labels, newlines, or explanation — only the data in that order.
+
+If the document is not an invoice, return:
 NOT AN INVOICE
 """
 
