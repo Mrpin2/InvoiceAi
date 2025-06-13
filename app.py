@@ -34,47 +34,46 @@ client = OpenAI(api_key=openai_api_key)
 
 ---------- Extraction Prompt ----------
 
-main_prompt = """ You are an invoice-extraction assistant.
+main_prompt = """ You are an invoice‑extraction assistant.
 
-Reply rules • If the document is NOT an invoice → reply exactly: NOT AN INVOICE • If it IS an invoice → return ONE comma-separated line (no labels, no extra text, no line-breaks) in this order: Vendor Name, Invoice No, Tax ID (GSTIN/EIN/VAT), HSN/SAC, Buyer Name, Place of Supply, Invoice Date, Expense Ledger, Tax Type, Tax Rate %, Basic Amount, CGST, SGST, IGST/Sales Tax, Total Payable, Narration, GST Input Eligible (Yes/No/Uncertain), TDS Applicable (Yes/No/Section/Uncertain), TDS Rate
+Reply exactly one of: • NOT AN INVOICE — if the document is clearly not an invoice • a single comma‑separated line in the field order below
 
-Extraction rules
+Field order Vendor Name, Invoice No, Tax ID (GSTIN/EIN/VAT), HSN/SAC, Buyer Name, Place of Supply, Invoice Date, Expense Ledger, Tax Type, Tax Rate %, Basic Amount, CGST, SGST, IGST/Sales Tax, Total Payable, Narration, GST Input Eligible (Yes/No/Uncertain), TDS Applicable (Yes/No/Section/Uncertain), TDS Rate
 
-1. Date format • Indian invoice → convert to DD/MM/YYYY
-• US / other regions → keep the visible format (e.g. MM/DD/YYYY or YYYY-MM-DD)
+Rules
 
+DATES
+• If the vendor is Indian (Indian address or a valid GSTIN) → output date as DD/MM/YYYY
+• Otherwise keep the invoice’s visible date format (MM/DD/YYYY or YYYY‑MM‑DD)
 
-2. Tax IDs • India: GSTIN must be exactly 15 alphanumeric characters
-• US: EIN must be 9 digits in the form 12-3456789
-• EU/other: use VAT if labelled
-• If format is invalid or absent → return “MISSING”
+TAX ID VALIDATION
+• GSTIN ⇒ exactly 15 alphanumeric characters; if length ≠ 15 or format wrong → MISSING
+• EIN ⇒ 9 digits in the form NN‑NNNNNNN
+• VAT ⇒ use if explicitly labelled VAT
+• Never output GSTIN when the vendor country is not India; output MISSING instead.
+• If multiple tax IDs are present, choose the one that matches the vendor’s country.
 
+TAX TYPE & BREAKDOWN
+• India → Tax Type = GST and extract CGST, SGST, IGST separately
+• International → Tax Type = VAT or Sales Tax and put total tax in IGST/Sales Tax column
 
-3. Tax type • India → GST
-• US/EU/other → Sales Tax or VAT
+HSN/SAC & SERVICE DETECTION
+• If code is 8 digits and starts with “99” OR description contains “service”/“consulting”/“professional” → treat as Service (SAC)
+• Otherwise treat as Goods (HSN).
+• Leave the HSN/SAC cell blank if no code and nothing can be inferred.
 
+EXPENSE LEDGER
+• Suggest a ledger based on narration and item type, e.g., “Professional Fees”, “Cloud Hosting”, “Software Subscription”.
 
-4. Tax breakdown • India → extract CGST, SGST, IGST
-• International → put VAT or Sales Tax into IGST/Sales Tax column
+MISSING DATA
+• Required & not found → MISSING
+• Optional & not found → empty string ""
+• Amounts that are zero or blank → 0.0
 
-
-5. Amounts • Return numeric values only (no currency symbols)
-• Use 0.0 for missing/zero amounts
-• If multiple tax lines, report the final/summary tax rate only
-
-
-6. Missing data • Required but not found → “MISSING”
-• Optional but not found → empty string ""
-
-
-7. Narration • Brief description of goods/services
-
-
-
-Validation & filtering • Invoice number must be unique; if only the word “Invoice” appears without a unique number → “MISSING”
-• Ignore logos, footers, repeated template text such as “computer-generated invoice”
-• Infer Vendor vs Buyer using labels like “Supplier”, “Billed To”, “Bill From”; if uncertain → “MISSING”
-• Extract only what is clearly visible — never invent data """
+OTHER GUIDELINES
+• Ignore logos, repeat headers/footers, and boiler‑plate text.
+• Invoice No must be unique; if only the word “Invoice” appears → MISSING
+• Extract only what is visibly present; never invent data. """
 
 def is_placeholder_row(text): placeholder_keywords = ["Vendor Name", "Invoice No", "Invoice Date", "Expense Ledger"] return all(x.lower() in text.lower() for x in placeholder_keywords)
 
@@ -146,37 +145,5 @@ for idx, file in enumerate(uploaded_files):
                     result_row = [file_name] + ["NOT AN INVOICE"] + ["-"] * (len(columns) - 2)
 
             st.session_state["processed_results"][file_name] = result_row
-            st.session_state["processing_status"][file_name] = "✅ Done"
-            completed_count += 1
-            st.success(f"{file_name}: ✅ Done")
-            st.info(f"🤖 {completed_count} out of {total_files} files processed")
-
-    except Exception as e:
-        st.session_state["processed_results"][file_name] = [file_name] + ["NOT AN INVOICE"] + ["-"] * (len(columns) - 2)
-        st.session_state["processing_status"][file_name] = "❌ Error"
-        st.error(f"❌ Error processing {file_name}: {e}")
-        st.text_area(f"Raw Output ({file_name})", traceback.format_exc())
-
-    finally:
-        if temp_file_path and os.path.exists(temp_file_path):
-            os.unlink(temp_file_path)
-
----------- Display Results ----------
-
-results = list(st.session_state["processed_results"].values()) if results: if completed_json: st_lottie(completed_json, height=200, key="done_animation")
-
-st.markdown("<h3 style='text-align: center;'>🎉 Yippie! All invoices processed with a smile 😊</h3>", unsafe_allow_html=True)
-
-df = pd.DataFrame(results, columns=columns)
-df.insert(0, "S. No", range(1, len(df) + 1))
-st.dataframe(df)
-
-csv_data = df.to_csv(index=False).encode("utf-8")
-st.download_button("📥 Download Results as CSV", csv_data, "invoice_results.csv", "text/csv")
-
-st.markdown("---")
-if st.session_state.summary_rows:
-    st.balloons()
-
-else: st.info("Upload one or more scanned invoices to get started.")
+            st.session_state["processing_status"][file
 
