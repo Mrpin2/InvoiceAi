@@ -86,7 +86,7 @@ if uploaded_files:
         st.subheader(f"📄 Processing: {file.name}")
         try:
             first_image = convert_pdf_first_page(file.read())
-            st.image(first_image, caption=f"{file.name}", use_container_width=True)
+           # st.image(first_image, caption=f"{file.name}", use_container_width=True)
         except Exception as e:
             st.error(f"❌ Error reading PDF: {e}")
             continue
@@ -130,7 +130,12 @@ if uploaded_files:
                 else:
                     raise Exception("❌ No valid API key provided.")
 
-                row = [x.strip() for x in csv_line.split(",")]
+                import csv
+
+reader = csv.reader([csv_line])
+row = next(reader)
+row = [x.strip() for x in row]
+
                 if len(row) != len(columns):
                     raise ValueError("Mismatch in extracted field count.")
                 results.append(row)
