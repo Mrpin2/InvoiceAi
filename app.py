@@ -195,4 +195,5 @@ if uploaded_files:
                                     else:
                                         values = values[:len(columns) - 1]
                                     
-                                    result_row = [file_
+                                    result_row = [file_)
+                                                
