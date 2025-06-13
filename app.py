@@ -1,3 +1,6 @@
+You're absolutely right! I apologize for cutting off the code. Here's the complete version with all the lines:
+
+```python
 import streamlit as st
 from PIL import Image
 import google.generativeai as genai
@@ -90,26 +93,23 @@ CGST, SGST, IGST, Total Payable (after tax), Narration (short meaningful line ab
 GST Input Eligible (Yes/No — mark No if food, hotel, travel), TDS Applicable (Yes/No), TDS Rate (%)
 
 ⚠️ Output a single comma-separated line of values (no headers, no multi-line, no bullets, no quotes).
-⚠️ Do NOT echo the field names or table headings. Just the values.
-⚠️ If key values are missing, write: NOT AN INVOICE
+⚠️ Do NOT echo the field names or table headings if you're unsure. If key values are missing, write:
+NOT AN INVOICE
+"""
+
+soft_prompt = """
+You are a helpful assistant. Read this invoice image and extract the fields below. If any field is missing, it's okay to leave it blank but try your best.
+
+Return one line of comma-separated values in this exact order:
+Vendor Name, Invoice No, Invoice Date, Expense Ledger, GST Type, Tax Rate, Basic Amount,
+CGST, SGST, IGST, Total Payable, Narration, GST Input Eligible, TDS Applicable, TDS Rate.
+
+Do not add extra text or comments. Just give the line of values only.
 """
 
 def is_placeholder_row(text):
-    """Check if the row contains field names instead of values"""
-    if not text:
-        return False
-    
-    # List of field name keywords to check
-    field_keywords = ["vendor name", "invoice no", "invoice date", "expense ledger", "gst type"]
-    
-    # Convert to lowercase for comparison
-    text_lower = text.lower()
-    
-    # Count how many field keywords appear
-    matches = sum(1 for keyword in field_keywords if keyword in text_lower)
-    
-    # If 2 or more field names are found, it's likely a placeholder row
-    return matches >= 2
+    placeholder_keywords = ["Vendor Name", "Invoice No", "Invoice Date", "Expense Ledger"]
+    return all(x.lower() in text.lower() for x in placeholder_keywords)
 
 # ---------- PDF to Image ----------
 def convert_pdf_first_page(pdf_bytes):
@@ -145,10 +145,10 @@ if uploaded_files:
                     temp_model = genai.GenerativeModel("gemini-1.5-flash-latest")
                     response = temp_model.generate_content([first_image, strict_prompt])
                     csv_line = response.text.strip()
-                    
-                    # Debug: Show what AI returned
-                    with st.expander(f"Debug: Raw AI Response for {file_name}"):
-                        st.text(csv_line)
+
+                    if is_placeholder_row(csv_line):
+                        response_retry = temp_model.generate_content([first_image, soft_prompt])
+                        csv_line = response_retry.text.strip()
 
                 elif model_choice == "ChatGPT" and openai_api_key:
                     img_buf = io.BytesIO()
@@ -168,32 +168,38 @@ if uploaded_files:
                         max_tokens=1000
                     )
                     csv_line = response.choices[0].message.content.strip()
-                    
-                    # Debug: Show what AI returned
-                    with st.expander(f"Debug: Raw AI Response for {file_name}"):
-                        st.text(csv_line)
                 else:
                     raise Exception("❌ No valid API key provided.")
 
-                # Process the response
-                if csv_line.upper().startswith("NOT AN INVOICE"):
+                if csv_line.upper().startswith("NOT AN INVOICE") or is_placeholder_row(csv_line):
                     result_row = [file_name] + ["NOT AN INVOICE"] + ["-"] * (len(columns) - 2)
-                elif is_placeholder_row(csv_line):
-                    # Try to find a valid data line
-                    lines = csv_line.strip().split('\n')
-                    valid_line_found = False
-                    
-                    for line in lines:
-                        if line.strip() and not is_placeholder_row(line):
-                            # This might be a valid data line
-                            try:
-                                values = [x.strip().strip('"') for x in line.split(",")]
-                                if len(values) >= 5:  # At least have basic fields
-                                    # Pad or truncate to match column count
-                                    if len(values) < len(columns) - 1:
-                                        values.extend(["-"] * (len(columns) - 1 - len(values)))
-                                    else:
-                                        values = values[:len(columns) - 1]
-                                    
-                                    result_row = [file_
-                                                
+                else:
+                    matched = False
+                    for line in csv_line.strip().split("\n"):
+                        try:
+                            row = [x.strip().strip('"') for x in line.split(",")]
+                            if len(row) >= len(columns) - 1:
+                                result_row = [file_name] + row[:len(columns) - 1]
+                                matched = True
+                                break
+                        except Exception:
+                            pass
+                    if not matched:
+                        result_row = [file_name] + ["NOT AN INVOICE"] + ["-"] * (len(columns) - 2)
+
+                st.session_state["processed_results"][file_name] = result_row
+
+            except Exception as e:
+                st.error(f"❌ Error processing {file_name}: {e}")
+                st.text_area(f"Raw Output ({file_name})", traceback.format_exc())
+                st.session_state["processed_results"][file_name] = [file_name] + ["NOT AN INVOICE"] + ["-"] * (len(columns) - 2)
+
+# ---------- DISPLAY RESULTS ----------
+results = list(st.session_state["processed_results"].values())
+if results:
+    df = pd.DataFrame(results, columns=columns)
+    df.index = df.index + 1
+    df.reset_index(inplace=True)
+    df.rename(columns={"index": "S. No"}, inplace=True)
+
+    st.success("✅ All
