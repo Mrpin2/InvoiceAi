@@ -1,7 +1,9 @@
-streamlit
-google-generativeai
 pydantic
-pymupdf
-pandas
-openpyxl
-streamlit-lottie
+google-generativeai
+streamlit 
+pandas 
+openpyxl 
+pydantic 
+google-generativeai
+google
+google-genai
