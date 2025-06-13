@@ -8,6 +8,8 @@ import requests
 import traceback
 from streamlit_lottie import st_lottie
 from openai import OpenAI
+import tempfile
+import os
 
 # ---------- Load Lottie Animation from URL ----------
 def load_lottie_url(url):
@@ -50,32 +52,16 @@ if not openai_api_key:
 
 client = OpenAI(api_key=openai_api_key)
 
-# ---------- Prompts ----------
-strict_prompt = """
-You are a professional finance assistant. If the uploaded document is NOT a proper GST invoice
-(e.g., if it's a bank statement, email, quote, or missing required fields), respond with exactly:
-NOT AN INVOICE
+# ---------- Prompt ----------
+main_prompt = """
+You are a professional assistant. Read this scanned document and extract the following:
 
-Otherwise, extract the following values from the invoice:
-
-Vendor Name, Invoice No, Invoice Date, Expense Ledger (like Office Supplies, Travel, Legal Fees, etc.),
-GST Type (IGST or CGST+SGST or NA), Tax Rate (%, only the rate like 5, 12, 18), Basic Amount (before tax),
-CGST, SGST, IGST, Total Payable (after tax), Narration (short meaningful line about the expense),
-GST Input Eligible (Yes/No — mark No if food, hotel, travel), TDS Applicable (Yes/No), TDS Rate (%)
-
-⚠️ Output a single comma-separated line of values (no headers, no multi-line, no bullets, no quotes).
-⚠️ Do NOT echo the field names or table headings if you're unsure. If key values are missing, write:
-NOT AN INVOICE
-"""
-
-soft_prompt = """
-You are a helpful assistant. Read this invoice image and extract the fields below. If any field is missing, it's okay to leave it blank but try your best.
-
-Return one line of comma-separated values in this exact order:
 Vendor Name, Invoice No, Invoice Date, Expense Ledger, GST Type, Tax Rate, Basic Amount,
-CGST, SGST, IGST, Total Payable, Narration, GST Input Eligible, TDS Applicable, TDS Rate.
+CGST, SGST, IGST, Total Payable, Narration, GST Input Eligible, TDS Applicable, TDS Rate
 
-Do not add extra text or comments. Just give the line of values only.
+If it's a valid invoice, respond with a single comma-separated line in that exact order (no labels, no newlines, no extra words).
+If the file is clearly NOT a GST invoice (e.g. bank statement), only then say:
+NOT AN INVOICE
 """
 
 def is_placeholder_row(text):
@@ -86,32 +72,33 @@ def is_placeholder_row(text):
 def convert_pdf_first_page(pdf_bytes):
     doc = fitz.open(stream=pdf_bytes, filetype="pdf")
     page = doc.load_page(0)
-    pix = page.get_pixmap(dpi=200)
+    pix = page.get_pixmap(dpi=300)
     return Image.open(io.BytesIO(pix.tobytes("png")))
 
 # ---------- PDF UPLOAD ----------
 uploaded_files = st.file_uploader("📤 Upload scanned invoice PDFs", type=["pdf"], accept_multiple_files=True)
 
 if uploaded_files:
-    for file in uploaded_files:
+    for idx, file in enumerate(uploaded_files):
         file_name = file.name
 
-        # Skip if already processed
         if file_name in st.session_state["processed_results"]:
             continue
 
-        st.subheader(f"📄 Processing: {file_name}")
-        try:
-            pdf_data = file.read()
-            first_image = convert_pdf_first_page(pdf_data)
-        except Exception as e:
-            st.error(f"❌ Error reading PDF: {e}")
-            st.session_state["processed_results"][file_name] = [file_name] + ["NOT AN INVOICE"] + ["-"] * (len(columns) - 2)
-            continue
+        st.markdown(f"**Processing file: {file_name} ({idx+1}/{len(uploaded_files)})**")
 
-        with st.spinner("🧠 Extracting data using ChatGPT..."):
-            csv_line = ""
-            try:
+        temp_file_path = None
+        try:
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
+                tmp.write(file.read())
+                temp_file_path = tmp.name
+
+            st.write(f"Uploading '{os.path.basename(temp_file_path)}' to temporary location...")
+            pdf_data = open(temp_file_path, "rb").read()
+            first_image = convert_pdf_first_page(pdf_data)
+            st.write(f"'{os.path.basename(temp_file_path)}' uploaded and converted to image.")
+
+            with st.spinner("🧠 Extracting data using ChatGPT..."):
                 img_buf = io.BytesIO()
                 first_image.save(img_buf, format="PNG")
                 img_buf.seek(0)
@@ -120,7 +107,7 @@ if uploaded_files:
                 chat_prompt = [
                     {"role": "system", "content": "You are a finance assistant."},
                     {"role": "user", "content": [
-                        {"type": "text", "text": strict_prompt},
+                        {"type": "text", "text": main_prompt},
                         {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{base64_image}"}}
                     ]}
                 ]
@@ -148,21 +135,24 @@ if uploaded_files:
                     if not matched:
                         result_row = [file_name] + ["NOT AN INVOICE"] + ["-"] * (len(columns) - 2)
 
+                st.write(f"Successfully extracted data from {file_name}")
                 st.session_state["processed_results"][file_name] = result_row
 
-            except Exception as e:
-                st.error(f"❌ Error processing {file_name}: {e}")
-                st.text_area(f"Raw Output ({file_name})", traceback.format_exc())
-                st.session_state["processed_results"][file_name] = [file_name] + ["NOT AN INVOICE"] + ["-"] * (len(columns) - 2)
+        except Exception as e:
+            st.error(f"❌ Error processing {file_name}: {e}")
+            st.text_area(f"Raw Output ({file_name})", traceback.format_exc())
+            st.session_state["processed_results"][file_name] = [file_name] + ["NOT AN INVOICE"] + ["-"] * (len(columns) - 2)
+
+        finally:
+            if temp_file_path and os.path.exists(temp_file_path):
+                os.unlink(temp_file_path)
+                st.write(f"Deleted temporary local file: {temp_file_path}")
 
 # ---------- DISPLAY RESULTS ----------
 results = list(st.session_state["processed_results"].values())
 if results:
     df = pd.DataFrame(results, columns=columns)
-    df.index = df.index + 1
-    df.reset_index(inplace=True)
-    df.rename(columns={"index": "S. No"}, inplace=True)
-
+    df.insert(0, "S. No", range(1, len(df) + 1))
     st.success("✅ All invoices processed!")
     st.dataframe(df)
 
