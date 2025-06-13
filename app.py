@@ -44,6 +44,8 @@ columns = [
 # ---------- Session State Init ----------
 if "processed_results" not in st.session_state:
     st.session_state["processed_results"] = {}
+if "processing_status" not in st.session_state:
+    st.session_state["processing_status"] = {}
 
 # ---------- Sidebar Auth ----------
 st.sidebar.header("🔐 AI Config")
@@ -95,13 +97,18 @@ uploaded_files = st.file_uploader("📤 Upload scanned invoice PDFs", type=["pdf
 if uploaded_files:
     if processing_json:
         st_lottie(processing_json, height=180, key="processing")
+    total_files = len(uploaded_files)
+    completed_count = 0
+
     for idx, file in enumerate(uploaded_files):
         file_name = file.name
 
         if file_name in st.session_state["processed_results"]:
             continue
 
-        st.markdown(f"**Processing file: {file_name} ({idx+1}/{len(uploaded_files)})**")
+        st.markdown(f"**Processing file: {file_name} ({idx+1}/{total_files})**")
+        st.session_state["processing_status"][file_name] = "⏳ Pending..."
+        st.info(f"{file_name}: ⏳ Pending...")
 
         temp_file_path = None
         try:
@@ -151,13 +158,17 @@ if uploaded_files:
                     if not matched:
                         result_row = [file_name] + ["NOT AN INVOICE"] + ["-"] * (len(columns) - 2)
 
-                st.write(f"Successfully extracted data from {file_name}")
                 st.session_state["processed_results"][file_name] = result_row
+                st.session_state["processing_status"][file_name] = "✅ Done"
+                completed_count += 1
+                st.success(f"{file_name}: ✅ Done")
+                st.info(f"🤖 {completed_count} out of {total_files} files processed")
 
         except Exception as e:
+            st.session_state["processed_results"][file_name] = [file_name] + ["NOT AN INVOICE"] + ["-"] * (len(columns) - 2)
+            st.session_state["processing_status"][file_name] = "❌ Error"
             st.error(f"❌ Error processing {file_name}: {e}")
             st.text_area(f"Raw Output ({file_name})", traceback.format_exc())
-            st.session_state["processed_results"][file_name] = [file_name] + ["NOT AN INVOICE"] + ["-"] * (len(columns) - 2)
 
         finally:
             if temp_file_path and os.path.exists(temp_file_path):
@@ -169,9 +180,9 @@ results = list(st.session_state["processed_results"].values())
 if results:
     if done_json:
         st_lottie(done_json, height=180, key="complete")
+    st.success("🎉 Yippie! All invoices processed with a smile 😊")
     df = pd.DataFrame(results, columns=columns)
     df.insert(0, "S. No", range(1, len(df) + 1))
-    st.success("✅ All invoices processed!")
     st.dataframe(df)
 
     csv_data = df.to_csv(index=False).encode("utf-8")
