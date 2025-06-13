@@ -7,21 +7,19 @@ import io
 import pandas as pd
 import base64
 import json
+import requests
 from streamlit_lottie import st_lottie
 
-# ---------- LOTTIE ANIMATION ----------
-lottie_json = {
-  "v": "5.5.9", "fr": 30, "ip": 0, "op": 180, "w": 600, "h": 600, "nm": "Invoice",
-  "ddd": 0, "assets": [], "layers": [{
-    "ddd": 0, "ind": 1, "ty": 4, "nm": "Layer 1", "sr": 1,
-    "ks": {"o": {"a": 0, "k": 100}, "r": {"a": 0, "k": 0},
-           "p": {"a": 0, "k": [300, 300, 0]}, "a": {"a": 0, "k": [0, 0, 0]},
-           "s": {"a": 0, "k": [100, 100, 100]}},
-    "shapes": [{"ty": "rc", "d": 1, "s": {"a": 0, "k": [150, 80]}, "p": {"a": 0, "k": [0, 0]}, "r": {"a": 0, "k": 20},
-                "nm": "rect", "hd": False}],
-    "ip": 0, "op": 180, "st": 0, "bm": 0
-  }]
-}
+# ---------- Load Lottie Animation from URL ----------
+def load_lottie_url(url):
+    r = requests.get(url)
+    if r.status_code != 200:
+        return None
+    return r.json()
+
+# Use a free hosted invoice animation from LottieFiles
+lottie_url = "https://assets2.lottiefiles.com/packages/lf20_3vbOcw.json"
+lottie_json = load_lottie_url(lottie_url)
 
 # ---------- UI CONFIGURATION ----------
 st.set_page_config(layout="wide")
