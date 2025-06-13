@@ -12,19 +12,13 @@ import tempfile
 import os
 
 # ---------- Load Assets ----------
-from base64 import b64encode
-
-def image_to_html_base64(path, height=200):
-    with open(path, "rb") as f:
-        img_data = b64encode(f.read()).decode()
-    return f'<img src="data:image/png;base64,{img_data}" height="{height}px">'
-
-hello_img = image_to_html_base64("hello_bot.png")  # ID: file-DpCqfcp9qBM38mw7XmFevY
-upload_img = image_to_html_base64("uploading.png")  # ID: file-J5EcbpHtBCmhTXfSNqPDuc
+hello_lottie = "https://assets1.lottiefiles.com/packages/lf20_puciaact.json"
 rocket_lottie = "https://assets2.lottiefiles.com/packages/lf20_ygzjzv.json"
 pop_lottie = "https://assets6.lottiefiles.com/packages/lf20_jcikwtux.json"
 balloons_lottie = "https://assets9.lottiefiles.com/packages/lf20_jtbfg2nb.json"
 
+hello_json = requests.get(hello_lottie).json()
+processing_gif_url = "https://raw.githubusercontent.com/Mrpin2/InvoiceAi/main/processing.gif"
 processing_json = requests.get(rocket_lottie).json()
 pop_json = requests.get(pop_lottie).json()
 balloon_json = requests.get(balloons_lottie).json()
@@ -33,7 +27,7 @@ balloon_json = requests.get(balloons_lottie).json()
 st.set_page_config(layout="wide")
 
 if "files_uploaded" not in st.session_state:
-    st.markdown(f"<div style='text-align:center;'>{hello_img}</div>", unsafe_allow_html=True)
+    st_lottie(hello_json, height=200, key="hello")
 
 st.markdown("<h2 style='text-align: center;'>📄 AI Invoice Extractor (ChatGPT)</h2>", unsafe_allow_html=True)
 st.markdown("Upload scanned PDF invoices and extract clean finance data using ChatGPT Vision")
@@ -100,7 +94,7 @@ def convert_pdf_first_page(pdf_bytes):
 uploaded_files = st.file_uploader("📤 Upload scanned invoice PDFs", type=["pdf"], accept_multiple_files=True)
 if uploaded_files:
     st.session_state["files_uploaded"] = True
-    st.markdown(f"<div style='text-align:center;'>{upload_img}<br><b>Processing! Hold On...</b></div>", unsafe_allow_html=True)
+    st.markdown(f"<div style='text-align:center;'><img src='{processing_gif_url}' height='180px'><br><b>Processing! Hold On...</b></div>", unsafe_allow_html=True)
 
     total_files = len(uploaded_files)
     completed_count = 0
