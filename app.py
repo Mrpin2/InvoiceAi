@@ -33,41 +33,42 @@ columns = [
     "Total Payable", "Narration", "GST Input Eligible", "TDS Applicable", "TDS Rate"
 ]
 
-# ---------- SIDEBAR AUTH & MODEL SELECT ----------
+# ---------- SIDEBAR AUTH ----------
 st.sidebar.header("🔐 AI Config")
 passcode = st.sidebar.text_input("Admin Passcode (optional)", type="password")
 admin_unlocked = passcode == "Essenbee"
 
-model_choice = st.sidebar.radio("Choose AI Model", ["Gemini", "ChatGPT"])
-
-# Initialize model flags and API keys
+# ---------- KEY & MODEL LOGIC ----------
+ai_model = None
+model_choice = None
 gemini_api_key = None
 openai_api_key = None
-ai_model = None
 openai_model = "gpt-4-vision-preview"
 
-# ---------- Handle Gemini ----------
-if model_choice == "Gemini":
-    if admin_unlocked:
-        st.sidebar.caption("🔓 Using admin Gemini key")
-        gemini_api_key = "AIzaSyA5Jnd7arMlbZ1x_ZpiE-AezrmsaXams7Y"
-    else:
-        gemini_api_key = st.sidebar.text_input("🔑 Your Gemini API Key", type="password")
+if admin_unlocked:
+    st.sidebar.success("🔓 Admin access granted.")
+    model_choice = st.sidebar.radio("Use which AI?", ["Gemini", "ChatGPT"])
 
-    if gemini_api_key:
+    if model_choice == "Gemini":
+        gemini_api_key = "AIzaSyA5Jnd7arMlbZ1x_ZpiE-AezrmsaXams7Y"
         genai.configure(api_key=gemini_api_key)
         ai_model = genai.GenerativeModel("gemini-1.5-flash-latest")
 
-# ---------- Handle ChatGPT ----------
-elif model_choice == "ChatGPT":
-    if admin_unlocked:
-        st.sidebar.caption("🔓 Using admin OpenAI key")
-        openai_api_key = "sk-admin-openai-key-here"  # Replace with your admin OpenAI key
-    else:
-        openai_api_key = st.sidebar.text_input("🔑 Your OpenAI API Key", type="password")
-
-    if openai_api_key:
+    elif model_choice == "ChatGPT":
+        openai_api_key = "sk-admin-openai-key-here"  # Replace with your real key
         openai.api_key = openai_api_key
+
+else:
+    model_choice = st.sidebar.radio("Choose AI Model", ["Gemini", "ChatGPT"])
+    if model_choice == "Gemini":
+        gemini_api_key = st.sidebar.text_input("🔑 Enter your Gemini API Key", type="password")
+        if gemini_api_key:
+            genai.configure(api_key=gemini_api_key)
+            ai_model = genai.GenerativeModel("gemini-1.5-flash-latest")
+    elif model_choice == "ChatGPT":
+        openai_api_key = st.sidebar.text_input("🔑 Enter your OpenAI API Key", type="password")
+        if openai_api_key:
+            openai.api_key = openai_api_key
 
 # ---------- PDF UPLOAD ----------
 uploaded_files = st.file_uploader("📤 Upload scanned invoice PDFs", type=["pdf"], accept_multiple_files=True)
