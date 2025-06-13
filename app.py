@@ -1,16 +1,15 @@
 import streamlit as st
-from PIL import Image
-import google.generativeai as genai
-import openai
-import fitz  # PyMuPDF
-import io
+from pydantic import BaseModel
+from typing import List, Optional
 import pandas as pd
-import base64
+import tempfile
+import io
+import fitz  # PyMuPDF
+import os
 import requests
 from streamlit_lottie import st_lottie
-import csv  # ✅ Added for robust CSV parsing
 
-# ---------- Load Lottie Animation from URL ----------
+# ---------- Load Lottie ----------
 def load_lottie_url(url):
     r = requests.get(url)
     if r.status_code != 200:
@@ -20,138 +19,124 @@ def load_lottie_url(url):
 lottie_url = "https://assets2.lottiefiles.com/packages/lf20_3vbOcw.json"
 lottie_json = load_lottie_url(lottie_url)
 
-# ---------- UI CONFIGURATION ----------
+# ---------- Pydantic Schema ----------
+class LineItem(BaseModel):
+    description: str
+    quantity: float
+    gross_worth: float
+
+class Invoice(BaseModel):
+    invoice_number: str
+    date: str
+    gstin: str
+    seller_name: str
+    buyer_name: str
+    buyer_gstin: Optional[str] = None
+    line_items: List[LineItem]
+    total_gross_worth: float
+    cgst: Optional[float] = None
+    sgst: Optional[float] = None
+    igst: Optional[float] = None
+    place_of_supply: Optional[str] = None
+    expense_ledger: Optional[str] = None
+    tds: Optional[str] = None
+
+# ---------- Gemini Extraction ----------
+def extract_invoice(client, model_id, file_path, schema):
+    display_name = os.path.basename(file_path)
+    file_resource = None
+    try:
+        file_resource = client.files.upload(file=file_path, config={'display_name': display_name})
+        prompt = (
+            "Extract structured invoice data using the provided schema. "
+            "Be accurate. Return only values that are clearly present. Prefer DD/MM/YYYY for dates."
+        )
+        response = client.models.generate_content(
+            model=model_id,
+            contents=[prompt, file_resource],
+            config={
+                'response_mime_type': 'application/json',
+                'response_schema': schema
+            }
+        )
+        return response.parsed
+    except Exception as e:
+        st.error(f"Gemini error: {e}")
+        return None
+    finally:
+        if file_resource:
+            try:
+                client.files.delete(name=file_resource.name)
+            except:
+                pass
+
+# ---------- Streamlit App ----------
 st.set_page_config(layout="wide")
 st_lottie(lottie_json, height=200, key="animation")
-st.markdown("<h2 style='text-align: center;'>📄 AI Invoice Extractor</h2>", unsafe_allow_html=True)
-st.markdown("Upload scanned PDF invoices and extract clean finance data using Gemini or ChatGPT")
+st.markdown("<h2 style='text-align: center;'>📄 Gemini Invoice Extractor</h2>", unsafe_allow_html=True)
+st.markdown("Upload scanned invoice PDFs to extract structured data using Gemini.")
 st.markdown("---")
 
-# ---------- Table Columns ----------
-columns = [
-    "Vendor Name", "Invoice No", "Invoice Date", "Expense Ledger",
-    "GST Type", "Tax Rate", "Basic Amount", "CGST", "SGST", "IGST",
-    "Total Payable", "Narration", "GST Input Eligible", "TDS Applicable", "TDS Rate"
-]
+st.sidebar.header("🔐 API Setup")
+gemini_api_key = st.sidebar.text_input("Enter your Gemini API Key", type="password")
+model_id = st.sidebar.text_input("Model ID", value="gemini-1.5-flash-latest")
 
-# ---------- Sidebar Auth ----------
-st.sidebar.header("🔐 AI Config")
-passcode = st.sidebar.text_input("Admin Passcode (optional)", type="password")
-admin_unlocked = passcode == "Essenbee"
-
-# ---------- Model Selection ----------
-ai_model = None
-model_choice = None
-gemini_api_key = None
-openai_api_key = None
-openai_model = "gpt-4-vision-preview"
-
-if admin_unlocked:
-    st.sidebar.success("🔓 Admin access granted.")
-    model_choice = st.sidebar.radio("Use which AI?", ["Gemini", "ChatGPT"])
-
-    if model_choice == "Gemini":
-        gemini_api_key = "AIzaSyA5Jnd7arMlbZ1x_ZpiE-AezrmsaXams7Y"
-        genai.configure(api_key=gemini_api_key)
-        ai_model = genai.GenerativeModel("gemini-1.5-flash-latest")
-
-    elif model_choice == "ChatGPT":
-        openai_api_key = "sk-admin-openai-key-here"  # <-- Replace with your real admin key
-        openai.api_key = openai_api_key
-
-else:
-    model_choice = st.sidebar.radio("Choose AI Model", ["Gemini", "ChatGPT"])
-    if model_choice == "Gemini":
-        gemini_api_key = st.sidebar.text_input("🔑 Enter your Gemini API Key", type="password")
-        if gemini_api_key:
-            genai.configure(api_key=gemini_api_key)
-            ai_model = genai.GenerativeModel("gemini-1.5-flash-latest")
-    elif model_choice == "ChatGPT":
-        openai_api_key = st.sidebar.text_input("🔑 Enter your OpenAI API Key", type="password")
-        if openai_api_key:
-            openai.api_key = openai_api_key
-
-# ---------- PDF to Image ----------
-def convert_pdf_first_page(pdf_bytes):
-    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
-    page = doc.load_page(0)
-    pix = page.get_pixmap(dpi=200)
-    return Image.open(io.BytesIO(pix.tobytes("png")))
-
-# ---------- PDF UPLOAD ----------
 uploaded_files = st.file_uploader("📤 Upload scanned invoice PDFs", type=["pdf"], accept_multiple_files=True)
 
-results = []
-if uploaded_files:
-    for file in uploaded_files:
-        st.subheader(f"📄 Processing: {file.name}")
-        try:
-            first_image = convert_pdf_first_page(file.read())
-            # st.image(first_image, caption=f"{file.name}", use_container_width=True)  # ❌ HIDE IMAGE
-        except Exception as e:
-            st.error(f"❌ Error reading PDF: {e}")
-            continue
+if st.button("🚀 Process Invoices"):
+    if not gemini_api_key or not uploaded_files:
+        st.error("Please enter your API key and upload files.")
+    else:
+        from google import genai
+        genai.configure(api_key=gemini_api_key)
+        client = genai
 
-        with st.spinner("🧠 Extracting data using AI..."):
-            prompt = """
-            You are a professional finance assistant. Extract the following fields from the invoice image:
-            Vendor Name, Invoice No, Invoice Date, Expense Ledger (like Office Supplies, Travel, Legal Fees, etc.),
-            GST Type (IGST or CGST+SGST or NA), Tax Rate (%, single value), Basic Amount,
-            CGST, SGST, IGST, Total Payable, Narration (short sentence),
-            GST Input Eligible (Yes/No — No if travel, food, hotel, etc.),
-            TDS Applicable (Yes/No), TDS Rate (in % if applicable).
-            Respond with CSV-style values in this exact order:
-            Vendor Name, Invoice No, Invoice Date, Expense Ledger,
-            GST Type, Tax Rate, Basic Amount, CGST, SGST, IGST,
-            Total Payable, Narration, GST Input Eligible, TDS Applicable, TDS Rate.
-            """
-            try:
-                if model_choice == "Gemini" and gemini_api_key:
-                    response = ai_model.generate_content([first_image, prompt])
-                    csv_line = response.text.strip()
+        summary_rows = []
+        for i, file in enumerate(uploaded_files):
+            st.subheader(f"📄 Processing: {file.name}")
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
+                tmp.write(file.read())
+                file_path = tmp.name
 
-                elif model_choice == "ChatGPT" and openai_api_key:
-                    img_buf = io.BytesIO()
-                    first_image.save(img_buf, format="PNG")
-                    img_buf.seek(0)
-                    base64_image = base64.b64encode(img_buf.read()).decode()
-                    chat_prompt = [
-                        {"role": "system", "content": "You are a finance assistant."},
-                        {"role": "user", "content": [
-                            {"type": "text", "text": prompt},
-                            {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{base64_image}"}}
-                        ]}
-                    ]
-                    response = openai.ChatCompletion.create(
-                        model=openai_model,
-                        messages=chat_prompt,
-                        max_tokens=1000
-                    )
-                    csv_line = response.choices[0].message.content.strip()
-                else:
-                    raise Exception("❌ No valid API key provided.")
+            data = extract_invoice(client, model_id, file_path, Invoice)
+            os.unlink(file_path)
 
-                # ✅ SAFELY PARSE CSV
-                reader = csv.reader([csv_line])
-                row = next(reader)
-                row = [x.strip() for x in row]
+            if data:
+                narration = (
+                    f"Invoice {data.invoice_number} dated {data.date} from {data.seller_name} to "
+                    f"{data.buyer_name}, total ₹{data.total_gross_worth:.2f}. "
+                    f"CGST: ₹{data.cgst or 0:.2f}, SGST: ₹{data.sgst or 0:.2f}, IGST: ₹{data.igst or 0:.2f}. "
+                    f"POS: {data.place_of_supply or 'N/A'}, Ledger: {data.expense_ledger or 'N/A'}, "
+                    f"TDS: {data.tds or 'N/A'}."
+                )
+                summary_rows.append({
+                    "File": file.name,
+                    "Invoice No": data.invoice_number,
+                    "Date": data.date,
+                    "Seller": data.seller_name,
+                    "Buyer": data.buyer_name,
+                    "Seller GSTIN": data.gstin,
+                    "Buyer GSTIN": data.buyer_gstin or "N/A",
+                    "Gross Amount": data.total_gross_worth,
+                    "CGST": data.cgst or 0,
+                    "SGST": data.sgst or 0,
+                    "IGST": data.igst or 0,
+                    "Ledger": data.expense_ledger or "N/A",
+                    "POS": data.place_of_supply or "N/A",
+                    "TDS": data.tds or "N/A",
+                    "Narration": narration
+                })
+            else:
+                st.warning(f"No data extracted for {file.name}")
 
-                if len(row) != len(columns):
-                    raise ValueError("Mismatch in extracted field count.")
-                results.append(row)
+        if summary_rows:
+            df = pd.DataFrame(summary_rows)
+            st.success("✅ All invoices processed!")
+            st.dataframe(df)
 
-            except Exception as e:
-                st.error(f"❌ Error processing {file.name}: {e}")
-                st.text_area("Raw AI Output", csv_line if 'csv_line' in locals() else "N/A")
-
-# ---------- DISPLAY RESULTS ----------
-if results:
-    df = pd.DataFrame(results, columns=columns)
-    st.success("✅ All invoices processed!")
-    st.dataframe(df)
-
-    csv = df.to_csv(index=False).encode()
-    st.download_button("📥 Download Extracted Data", csv, "invoice_data.csv", "text/csv")
-    st.balloons()
-else:
-    st.info("Upload one or more scanned invoices to get started.")
+            output = io.BytesIO()
+            with pd.ExcelWriter(output, engine='openpyxl') as writer:
+                df.to_excel(writer, index=False)
+            st.download_button("📥 Download Excel", output.getvalue(), "invoice_summary.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+        else:
+            st.warning("No valid invoices extracted.")
