@@ -97,17 +97,21 @@ if uploaded_files:
 
         with st.spinner("🧠 Extracting data using AI..."):
             prompt = """
-            You are a professional finance assistant. Extract the following fields from the invoice image:
-            Vendor Name, Invoice No, Invoice Date, Expense Ledger (like Office Supplies, Travel, Legal Fees, etc.),
-            GST Type (IGST or CGST+SGST or NA), Tax Rate (%, single value), Basic Amount,
-            CGST, SGST, IGST, Total Payable, Narration (short sentence),
-            GST Input Eligible (Yes/No — No if travel, food, hotel, etc.),
-            TDS Applicable (Yes/No), TDS Rate (in % if applicable).
-            Respond with CSV-style values in this exact order:
-            Vendor Name, Invoice No, Invoice Date, Expense Ledger,
-            GST Type, Tax Rate, Basic Amount, CGST, SGST, IGST,
-            Total Payable, Narration, GST Input Eligible, TDS Applicable, TDS Rate.
-            """
+You are a professional finance assistant. If the uploaded document is NOT a proper GST invoice
+(e.g., if it's a bank statement, email, quote, or missing required fields), respond with exactly:
+NOT AN INVOICE
+
+Otherwise, extract the following values from the invoice:
+
+Vendor Name, Invoice No, Invoice Date, Expense Ledger (like Office Supplies, Travel, Legal Fees, etc.),
+GST Type (IGST or CGST+SGST or NA), Tax Rate (%, only the rate like 5, 12, 18), Basic Amount (before tax),
+CGST, SGST, IGST, Total Payable (after tax), Narration (short meaningful line about the expense),
+GST Input Eligible (Yes/No — mark No if food, hotel, travel), TDS Applicable (Yes/No), TDS Rate (%)
+
+⚠️ Output a single comma-separated line of values (no headers, no multi-line, no bullets, no quotes).
+⚠️ Do NOT echo the field names or table headings if you're unsure. If key values are missing, write:
+NOT AN INVOICE
+"""
 
             try:
                 if model_choice == "Gemini" and gemini_api_key:
@@ -135,24 +139,27 @@ if uploaded_files:
                 else:
                     raise Exception("❌ No valid API key provided.")
 
-                lines = csv_line.strip().split("\n")
-                matched = False
-
-                for line in lines:
-                    try:
-                        row = [x.strip().strip('"') for x in line.split(",")]
-                        if len(row) >= len(columns) - 1:
-                            row = row[:len(columns) - 1]
-                            results.append([file.name] + row)
-                            matched = True
-                            break
-                    except Exception:
-                        st.warning(f"Skipping malformed row in {file.name}: {line}")
-
-                if not matched:
-                    st.warning(f"Likely not invoice or could not parse {file.name}.")
-                    st.text_area(f"Raw Output ({file.name})", csv_line)
+                # ---------- Result Parsing ----------
+                if csv_line.upper().startswith("NOT AN INVOICE"):
                     results.append([file.name] + ["NOT AN INVOICE"] + ["-"] * (len(columns) - 2))
+                else:
+                    lines = csv_line.strip().split("\n")
+                    matched = False
+                    for line in lines:
+                        try:
+                            row = [x.strip().strip('"') for x in line.split(",")]
+                            if len(row) >= len(columns) - 1:
+                                row = row[:len(columns) - 1]
+                                results.append([file.name] + row)
+                                matched = True
+                                break
+                        except Exception:
+                            st.warning(f"Skipping malformed row in {file.name}: {line}")
+
+                    if not matched:
+                        st.warning(f"Could not parse {file.name} properly.")
+                        st.text_area(f"Raw Output ({file.name})", csv_line)
+                        results.append([file.name] + ["NOT AN INVOICE"] + ["-"] * (len(columns) - 2))
 
             except Exception as e:
                 st.error(f"❌ Error processing {file.name}: {e}")
