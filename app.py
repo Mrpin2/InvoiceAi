@@ -259,4 +259,4 @@ if results:
     df = pd.DataFrame(results, columns=columns)
     df.index = df.index + 1
     df.reset_index(inplace=True)
-    df.rename(columns={"index": "S. No"}, inplace=True
+    df.rename(columns={"index": "S. No"}, inplace=True)
