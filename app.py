@@ -1,6 +1,3 @@
-You're absolutely right! I apologize for cutting off the code. Here's the complete version with all the lines:
-
-```python
 import streamlit as st
 from PIL import Image
 import google.generativeai as genai
