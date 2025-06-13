@@ -10,13 +10,12 @@ from pydantic import BaseModel
 from typing import List, Optional
 from PIL import Image
 from streamlit_lottie import st_lottie
+import csv
 
-# ---------- Animation ----------
+# ---------- Lottie Animation ----------
 def load_lottie_url(url):
     r = requests.get(url)
-    if r.status_code != 200:
-        return None
-    return r.json()
+    return r.json() if r.status_code == 200 else None
 
 lottie_url = "https://assets2.lottiefiles.com/packages/lf20_3vbOcw.json"
 lottie_json = load_lottie_url(lottie_url)
@@ -65,7 +64,6 @@ model_choice = st.sidebar.radio("Choose AI Model", ["Gemini", "ChatGPT"])
 
 gemini_api_key = None
 openai_api_key = None
-ai_model = None
 openai_model = "gpt-4-vision-preview"
 
 if model_choice == "Gemini":
@@ -82,26 +80,31 @@ elif model_choice == "ChatGPT":
     else:
         openai_api_key = st.sidebar.text_input("🔑 Your OpenAI API Key", type="password")
 
-# ---------- Gemini File API Extraction ----------
+# ---------- Gemini Extraction ----------
 def extract_invoice_from_pdf_gemini(pdf_path, gemini_api_key, model_id="gemini-1.5-flash-latest"):
     try:
         from google import generativeai as genai
         genai.configure(api_key=gemini_api_key)
-        file_resource = genai.files.upload(file=pdf_path)
+
+        model = genai.GenerativeModel(model_id)
+        file_resource = model.upload_file(pdf_path)
+
         prompt = (
             "Extract all invoice fields according to the schema. "
             "Use Indian formats. If data is missing, leave it null or empty. "
         )
-        response = genai.models.generate_content(
-            model=model_id,
+
+        response = model.generate_content(
             contents=[prompt, file_resource],
             config={
                 "response_schema": Invoice,
                 "response_mime_type": "application/json"
             }
         )
-        genai.files.delete(name=file_resource.name)
+
+        model.delete_file(file_resource.name)
         return response.parsed
+
     except Exception as e:
         st.error(f"❌ Gemini error: {e}")
         return None
@@ -146,11 +149,11 @@ if uploaded_files:
                 extracted = extract_invoice_from_pdf_gemini(tmp_path, gemini_api_key)
 
             elif model_choice == "ChatGPT" and openai_api_key:
-                # Convert first page to image
                 doc = fitz.open(tmp_path)
                 page = doc.load_page(0)
                 pix = page.get_pixmap(dpi=200)
                 img = Image.open(io.BytesIO(pix.tobytes("png")))
+
                 prompt = """
                 You are a professional finance assistant. Extract the following fields from the invoice image:
                 Vendor Name, Invoice No, Invoice Date, Expense Ledger (like Office Supplies, Travel, Legal Fees, etc.),
@@ -164,7 +167,9 @@ if uploaded_files:
                 Total Payable, Narration, GST Input Eligible, TDS Applicable, TDS Rate.
                 """
                 csv_line = extract_invoice_from_pdf_openai(img, prompt, openai_api_key)
-                row = [x.strip() for x in next(csv.reader(io.StringIO(csv_line, newline='')))]
+                reader = csv.reader(io.StringIO(csv_line, newline=''))
+                row = [x.strip() for x in next(reader)]
+
                 if len(row) != len(columns):
                     raise ValueError("CSV row doesn't match expected column count")
                 results.append(row)
@@ -178,7 +183,7 @@ if uploaded_files:
                     extracted.cgst or 0.0, extracted.sgst or 0.0, extracted.igst or 0.0,
                     extracted.total_gross_worth + (extracted.cgst or 0) + (extracted.sgst or 0) + (extracted.igst or 0),
                     f"Invoice {extracted.invoice_number} issued by {extracted.seller_name}",
-                    "No" if extracted.expense_ledger in ["Travel", "Food", "Hotel"] else "Yes",
+                    "No" if (extracted.expense_ledger or "").lower() in ["travel", "food", "hotel"] else "Yes",
                     "Yes" if extracted.tds else "No",
                     extracted.tds or ""
                 ]
@@ -196,8 +201,8 @@ if results:
     st.success("✅ All invoices processed!")
     st.dataframe(df)
 
-    csv = df.to_csv(index=False).encode()
-    st.download_button("📥 Download Extracted Data", csv, "invoice_data.csv", "text/csv")
+    csv_data = df.to_csv(index=False).encode()
+    st.download_button("📥 Download Extracted Data", csv_data, "invoice_data.csv", "text/csv")
     st.balloons()
 else:
     st.info("Upload one or more scanned invoices to get started.")
