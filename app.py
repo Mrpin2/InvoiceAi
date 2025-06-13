@@ -148,12 +148,11 @@ if uploaded_files:
                     row = [x.strip() for x in line.split(",")]
                     if len(row) == len(columns) - 1:
                         valid_rows.append([file.name] + row)
-                    else:
-                        st.warning(f"Ignored a row in {file.name} due to field count mismatch: {line}")
 
                 if not valid_rows:
                     st.warning(f"No valid rows found in {file.name}. Expected {len(columns) - 1} fields.")
                     st.text_area(f"Raw Output ({file.name})", csv_line)
+                    results.append([file.name] + ["NOT AN INVOICE"] + ["-"] * (len(columns) - 2))
                     continue
 
                 results.extend(valid_rows)
@@ -161,6 +160,7 @@ if uploaded_files:
             except Exception as e:
                 st.error(f"❌ Error processing {file.name}: {e}")
                 st.text_area(f"Raw Output ({file.name})", traceback.format_exc())
+                results.append([file.name] + ["NOT AN INVOICE"] + ["-"] * (len(columns) - 2))
 
 # ---------- DISPLAY RESULTS ----------
 if results:
