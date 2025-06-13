@@ -202,4 +202,4 @@ if results:
     df.reset_index(inplace=True)
     df.rename(columns={"index": "S. No"}, inplace=True)
 
-    st.success("✅ All
+    st.success("✅ All invoices processed successfully!")
