@@ -1,18 +1,19 @@
-                for line in lines:
-                    try:
-                        row = [x.strip().strip('"') for x in line.split(",")]
-                        if len(row) >= len(columns) - 1:
-                            row = row[:len(columns) - 1]
-                            results.append([file.name] + row)
-                            matched = True
-                            break
-                    except Exception as parse_error:
-                        st.warning(f"Skipping malformed row in {file.name}: {line}")
+            matched = False
+            for line in lines:
+                try:
+                    row = [x.strip().strip('"') for x in line.split(",")]
+                    if len(row) >= len(columns) - 1:
+                        row = row[:len(columns) - 1]
+                        results.append([file.name] + row)
+                        matched = True
+                        break
+                except Exception as parse_error:
+                    st.warning(f"Skipping malformed row in {file.name}: {line}")
 
-                if not matched:
-                    st.warning(f"Likely not invoice or could not parse {file.name}.")
-                    st.text_area(f"Raw Output ({file.name})", csv_line)
-                    results.append([file.name] + ["NOT AN INVOICE"] + ["-"] * (len(columns) - 2))
+            if not matched:
+                st.warning(f"Likely not invoice or could not parse {file.name}.")
+                st.text_area(f"Raw Output ({file.name})", csv_line)
+                results.append([file.name] + ["NOT AN INVOICE"] + ["-"] * (len(columns) - 2))
 
         except Exception as e:
             st.error(f"❌ Error processing {file.name}: {e}")
