@@ -81,22 +81,8 @@ def convert_pdf_first_page(pdf_bytes):
     pix = page.get_pixmap(dpi=200)
     return Image.open(io.BytesIO(pix.tobytes("png")))
 
-# ---------- PDF UPLOAD ----------
-uploaded_files = st.file_uploader("📤 Upload scanned invoice PDFs", type=["pdf"], accept_multiple_files=True)
-
-results = []
-if uploaded_files:
-    for file in uploaded_files:
-        st.subheader(f"📄 Processing: {file.name}")
-        try:
-            pdf_data = file.read()
-            first_image = convert_pdf_first_page(pdf_data)
-        except Exception as e:
-            st.error(f"❌ Error reading PDF: {e}")
-            continue
-
-        with st.spinner("🧠 Extracting data using AI..."):
-            prompt = """
+# ---------- Prompts ----------
+strict_prompt = """
 You are a professional finance assistant. If the uploaded document is NOT a proper GST invoice
 (e.g., if it's a bank statement, email, quote, or missing required fields), respond with exactly:
 NOT AN INVOICE
@@ -113,10 +99,45 @@ GST Input Eligible (Yes/No — mark No if food, hotel, travel), TDS Applicable (
 NOT AN INVOICE
 """
 
+soft_prompt = """
+You are a helpful assistant. Read this invoice image and extract the fields below. If any field is missing, it's okay to leave it blank but try your best.
+
+Return one line of comma-separated values in this exact order:
+Vendor Name, Invoice No, Invoice Date, Expense Ledger, GST Type, Tax Rate, Basic Amount,
+CGST, SGST, IGST, Total Payable, Narration, GST Input Eligible, TDS Applicable, TDS Rate.
+
+Do not add extra text or comments. Just give the line of values only.
+"""
+
+def is_placeholder_row(text):
+    placeholder_keywords = ["Vendor Name", "Invoice No", "Invoice Date", "Expense Ledger"]
+    return all(x.lower() in text.lower() for x in placeholder_keywords)
+
+# ---------- PDF UPLOAD ----------
+uploaded_files = st.file_uploader("📤 Upload scanned invoice PDFs", type=["pdf"], accept_multiple_files=True)
+
+results = []
+if uploaded_files:
+    for file in uploaded_files:
+        st.subheader(f"📄 Processing: {file.name}")
+        try:
+            pdf_data = file.read()
+            first_image = convert_pdf_first_page(pdf_data)
+        except Exception as e:
+            st.error(f"❌ Error reading PDF: {e}")
+            continue
+
+        with st.spinner("🧠 Extracting data using AI..."):
+            csv_line = ""
             try:
+                # ---------- First Attempt with Strict Prompt ----------
                 if model_choice == "Gemini" and gemini_api_key:
-                    response = ai_model.generate_content([first_image, prompt])
+                    response = ai_model.generate_content([first_image, strict_prompt])
                     csv_line = response.text.strip()
+                    if is_placeholder_row(csv_line):
+                        # Retry with soft prompt
+                        response_retry = ai_model.generate_content([first_image, soft_prompt])
+                        csv_line = response_retry.text.strip()
 
                 elif model_choice == "ChatGPT" and openai_api_key:
                     img_buf = io.BytesIO()
@@ -126,7 +147,7 @@ NOT AN INVOICE
                     chat_prompt = [
                         {"role": "system", "content": "You are a finance assistant."},
                         {"role": "user", "content": [
-                            {"type": "text", "text": prompt},
+                            {"type": "text", "text": strict_prompt},
                             {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{base64_image}"}}
                         ]}
                     ]
@@ -136,11 +157,12 @@ NOT AN INVOICE
                         max_tokens=1000
                     )
                     csv_line = response.choices[0].message.content.strip()
+
                 else:
                     raise Exception("❌ No valid API key provided.")
 
                 # ---------- Result Parsing ----------
-                if csv_line.upper().startswith("NOT AN INVOICE"):
+                if csv_line.upper().startswith("NOT AN INVOICE") or is_placeholder_row(csv_line):
                     results.append([file.name] + ["NOT AN INVOICE"] + ["-"] * (len(columns) - 2))
                 else:
                     lines = csv_line.strip().split("\n")
