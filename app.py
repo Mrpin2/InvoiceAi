@@ -28,7 +28,8 @@ done_json = load_lottie_url(done_lottie)
 
 # ---------- UI CONFIGURATION ----------
 st.set_page_config(layout="wide")
-st_lottie(lottie_json, height=200, key="animation")
+if lottie_json:
+    st_lottie(lottie_json, height=200, key="animation")
 st.markdown("<h2 style='text-align: center;'>📄 AI Invoice Extractor (ChatGPT)</h2>", unsafe_allow_html=True)
 st.markdown("Upload scanned PDF invoices and extract clean finance data using ChatGPT Vision")
 st.markdown("---")
@@ -92,7 +93,8 @@ def convert_pdf_first_page(pdf_bytes):
 uploaded_files = st.file_uploader("📤 Upload scanned invoice PDFs", type=["pdf"], accept_multiple_files=True)
 
 if uploaded_files:
-    st_lottie(processing_json, height=180, key="processing")
+    if processing_json:
+        st_lottie(processing_json, height=180, key="processing")
     for idx, file in enumerate(uploaded_files):
         file_name = file.name
 
@@ -165,7 +167,8 @@ if uploaded_files:
 # ---------- DISPLAY RESULTS ----------
 results = list(st.session_state["processed_results"].values())
 if results:
-    st_lottie(done_json, height=180, key="complete")
+    if done_json:
+        st_lottie(done_json, height=180, key="complete")
     df = pd.DataFrame(results, columns=columns)
     df.insert(0, "S. No", range(1, len(df) + 1))
     st.success("✅ All invoices processed!")
