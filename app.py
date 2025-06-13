@@ -30,7 +30,7 @@ st.markdown("---")
 
 # ---------- Table Columns ----------
 columns = [
-    "File Name", "Vendor Name", "Invoice No", "Invoice Date", "Expense Ledger",
+    "File Name", "Vendor Name", "Invoice No", "GSTIN", "HSN/SAC", "Buyer Name", "Place of Supply", "Invoice Date", "Expense Ledger",
     "GST Type", "Tax Rate", "Basic Amount", "CGST", "SGST", "IGST",
     "Total Payable", "Narration", "GST Input Eligible", "TDS Applicable", "TDS Rate"
 ]
