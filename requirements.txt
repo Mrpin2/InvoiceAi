@@ -1,5 +1,8 @@
 streamlit
 google-generativeai
 openai
-pillow
-PyMuPDF
+pandas
+pdf2image
+Pillow
+base64
+streamlit-lottie
