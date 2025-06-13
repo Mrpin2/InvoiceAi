@@ -41,14 +41,22 @@ if "processed_results" not in st.session_state:
 
 # ---------- Sidebar Auth ----------
 st.sidebar.header("🔐 AI Config")
-passcode = st.sidebar.text_input("Admin Passcode (optional)", type="password")
+passcode = st.sidebar.text_input("Admin Passcode", type="password")
 admin_unlocked = passcode == "Essenbee"
 
-# ---------- OpenAI Key ----------
-openai_api_key = st.secrets.get("OPENAI_API_KEY")
-if not openai_api_key:
-    st.sidebar.error("OPENAI_API_KEY missing in secrets.")
-    st.stop()
+# ---------- OpenAI API Key ----------
+openai_api_key = None
+if admin_unlocked:
+    st.sidebar.success("🔓 Admin access granted.")
+    openai_api_key = st.secrets.get("OPENAI_API_KEY")
+    if not openai_api_key:
+        st.sidebar.error("OPENAI_API_KEY missing in secrets.")
+        st.stop()
+else:
+    openai_api_key = st.sidebar.text_input("🔑 Enter your OpenAI API Key", type="password")
+    if not openai_api_key:
+        st.sidebar.warning("Please enter a valid API key to continue.")
+        st.stop()
 
 client = OpenAI(api_key=openai_api_key)
 
@@ -56,8 +64,8 @@ client = OpenAI(api_key=openai_api_key)
 main_prompt = """
 You are a professional assistant. Read this scanned document and extract the following:
 
-Vendor Name, Invoice No, Invoice Date, Expense Ledger, GST Type, Tax Rate, Basic Amount,
-CGST, SGST, IGST, Total Payable, Narration, GST Input Eligible, TDS Applicable, TDS Rate
+Vendor Name, Invoice No, GSTIN, HSN/SAC, Buyer Name, Place of Supply, Invoice Date, Expense Ledger,
+GST Type, Tax Rate, Basic Amount, CGST, SGST, IGST, Total Payable, Narration, GST Input Eligible, TDS Applicable, TDS Rate
 
 If it's a valid invoice, respond with a single comma-separated line in that exact order (no labels, no newlines, no extra words).
 If the file is clearly NOT a GST invoice (e.g. bank statement), only then say:
