@@ -14,7 +14,7 @@ import tempfile
 import os
 
 # ---------- Load Animations ----------
-hello_lottie = "https://assets1.lottiefiles.com/packages/lf20_touohxv0.json"
+hello_lottie = "https://assets2.lottiefiles.com/packages/lf20_4kx2q32n.json"  # ✅ waving bot
 rocket_lottie = "https://assets2.lottiefiles.com/packages/lf20_ygzjzv.json"
 pop_lottie = "https://assets10.lottiefiles.com/packages/lf20_qp1q7mct.json"
 balloons_lottie = "https://assets9.lottiefiles.com/packages/lf20_jtbfg2nb.json"
@@ -201,7 +201,6 @@ if results:
     csv_data = df.to_csv(index=False).encode("utf-8")
     st.download_button("📥 Download Results as CSV", csv_data, "invoice_results.csv", "text/csv")
 
-    # Show balloons if summary_rows are present
     st.markdown(f"---")
     if st.session_state.summary_rows:
         st.balloons()
