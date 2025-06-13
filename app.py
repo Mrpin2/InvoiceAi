@@ -1,6 +1,6 @@
 
 import streamlit as st
-from pdf2image import convert_from_bytes
+import fitz  # PyMuPDF
 from PIL import Image
 import google.generativeai as genai
 import io
@@ -9,7 +9,7 @@ import base64
 
 # Set Streamlit UI
 st.set_page_config(layout="wide")
-st.title("📄 AI Invoice Extractor (Gemini Only - Secure)")
+st.title("📄 AI Invoice Extractor (Gemini Only - Streamlit Ready)")
 
 # Define output columns
 columns = [
@@ -40,8 +40,10 @@ results = []
 if uploaded_files:
     for file in uploaded_files:
         st.subheader(f"📄 Processing: {file.name}")
-        images = convert_from_bytes(file.read(), dpi=200)
-        first_image = images[0]
+        doc = fitz.open(stream=file.read(), filetype="pdf")
+        page = doc.load_page(0)
+        pix = page.get_pixmap()
+        first_image = Image.open(io.BytesIO(pix.tobytes("png")))
         st.image(first_image, caption=f"Preview of {file.name}", use_column_width=True)
 
         with st.spinner("Extracting data using Gemini..."):
@@ -51,12 +53,8 @@ if uploaded_files:
             GST Type (IGST or CGST+SGST or NA), Tax Rate (%, single value), Basic Amount,
             CGST, SGST, IGST, Total Payable, Narration (short sentence),
             GST Input Eligible (Yes/No — No if travel, food, hotel, etc.),
-            TDS Applicable (Yes/No), TDS Rate (in % if applicable).
-            Respond with CSV-style values in this exact order:
-            Vendor Name, Invoice No, Invoice Date, Expense Ledger,
-            GST Type, Tax Rate, Basic Amount, CGST, SGST, IGST,
-            Total Payable, Narration, GST Input Eligible, TDS Applicable, TDS Rate.
-            """
+            TD...
+
             try:
                 response = model.generate_content([first_image, prompt])
                 csv_line = response.text.strip()
