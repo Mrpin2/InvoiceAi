@@ -4,15 +4,15 @@ import tempfile
 import os
 import io
 import base64
-import fitz  # PyMuPDF
+import fitz
 import requests
-from pydantic import BaseModel
-from typing import List, Optional
 from PIL import Image
 from streamlit_lottie import st_lottie
+from pydantic import BaseModel
+from typing import List, Optional
 import csv
 
-# ---------- Lottie Animation ----------
+# ---------- Lottie ----------
 def load_lottie_url(url):
     r = requests.get(url)
     return r.json() if r.status_code == 200 else None
@@ -42,14 +42,13 @@ class Invoice(BaseModel):
     expense_ledger: Optional[str] = None
     tds: Optional[str] = None
 
-# ---------- UI Setup ----------
+# ---------- UI ----------
 st.set_page_config(layout="wide")
 st_lottie(lottie_json, height=200, key="animation")
 st.markdown("<h2 style='text-align: center;'>📄 AI Invoice Extractor</h2>", unsafe_allow_html=True)
 st.markdown("Upload scanned PDF invoices and extract clean finance data using Gemini or ChatGPT")
 st.markdown("---")
 
-# ---------- Columns ----------
 columns = [
     "Vendor Name", "Invoice No", "Invoice Date", "Expense Ledger",
     "GST Type", "Tax Rate", "Basic Amount", "CGST", "SGST", "IGST",
@@ -84,39 +83,39 @@ elif model_choice == "ChatGPT":
 def extract_invoice_from_pdf_gemini(pdf_path, gemini_api_key, model_id="gemini-1.5-flash-latest"):
     try:
         from google import generativeai as genai
+        from google.generativeai.types import Content
         genai.configure(api_key=gemini_api_key)
 
         model = genai.GenerativeModel(model_id)
-        file_resource = model.upload_file(pdf_path)
+        file_resource = genai.upload_file(path=pdf_path)
 
-        prompt = (
-            "Extract all invoice fields according to the schema. "
-            "Use Indian formats. If data is missing, leave it null or empty. "
-        )
+        prompt = "Extract all invoice fields as per the schema."
 
         response = model.generate_content(
-            contents=[prompt, file_resource],
+            contents=[
+                Content(role="user", parts=[prompt]),
+                file_resource.to_part()
+            ],
             config={
                 "response_schema": Invoice,
                 "response_mime_type": "application/json"
             }
         )
 
-        model.delete_file(file_resource.name)
+        genai.delete_file(name=file_resource.name)
         return response.parsed
 
     except Exception as e:
         st.error(f"❌ Gemini error: {e}")
         return None
 
-# ---------- ChatGPT Vision ----------
+# ---------- ChatGPT ----------
 def extract_invoice_from_pdf_openai(image: Image.Image, prompt: str, api_key: str):
     import openai
     openai.api_key = api_key
     buf = io.BytesIO()
     image.save(buf, format="PNG")
-    buf.seek(0)
-    img_b64 = base64.b64encode(buf.read()).decode()
+    img_b64 = base64.b64encode(buf.getvalue()).decode()
     chat_prompt = [
         {"role": "system", "content": "You are a finance assistant."},
         {"role": "user", "content": [
@@ -131,7 +130,7 @@ def extract_invoice_from_pdf_openai(image: Image.Image, prompt: str, api_key: st
     )
     return response.choices[0].message.content.strip()
 
-# ---------- PDF Upload ----------
+# ---------- File Upload ----------
 uploaded_files = st.file_uploader("📤 Upload scanned invoice PDFs", type=["pdf"], accept_multiple_files=True)
 
 results = []
@@ -169,7 +168,6 @@ if uploaded_files:
                 csv_line = extract_invoice_from_pdf_openai(img, prompt, openai_api_key)
                 reader = csv.reader(io.StringIO(csv_line, newline=''))
                 row = [x.strip() for x in next(reader)]
-
                 if len(row) != len(columns):
                     raise ValueError("CSV row doesn't match expected column count")
                 results.append(row)
@@ -178,7 +176,7 @@ if uploaded_files:
                 row = [
                     extracted.seller_name, extracted.invoice_number, extracted.date, extracted.expense_ledger or "N/A",
                     "IGST" if extracted.igst else "CGST+SGST" if extracted.cgst and extracted.sgst else "NA",
-                    "",  # Tax Rate not extracted yet
+                    "",  # Tax Rate unknown
                     extracted.total_gross_worth or 0.0,
                     extracted.cgst or 0.0, extracted.sgst or 0.0, extracted.igst or 0.0,
                     extracted.total_gross_worth + (extracted.cgst or 0) + (extracted.sgst or 0) + (extracted.igst or 0),
@@ -195,14 +193,12 @@ if uploaded_files:
         finally:
             os.unlink(tmp_path)
 
-# ---------- Display Results ----------
+# ---------- Display ----------
 if results:
     df = pd.DataFrame(results, columns=columns)
     st.success("✅ All invoices processed!")
     st.dataframe(df)
-
-    csv_data = df.to_csv(index=False).encode()
-    st.download_button("📥 Download Extracted Data", csv_data, "invoice_data.csv", "text/csv")
+    st.download_button("📥 Download Extracted Data", df.to_csv(index=False).encode(), "invoice_data.csv", "text/csv")
     st.balloons()
 else:
     st.info("Upload one or more scanned invoices to get started.")
