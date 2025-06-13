@@ -3,6 +3,6 @@ streamlit-lottie
 requests
 google-generativeai
 openai
+pymupdf
 pandas
-pdf2image
 Pillow
