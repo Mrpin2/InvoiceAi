@@ -11,25 +11,25 @@ from openai import OpenAI
 import tempfile
 import os
 
-# ---------- Load Lottie Animation from URL ----------
+# ---------- Load Animation + Assets ----------
 def load_lottie_url(url):
     r = requests.get(url)
     if r.status_code != 200:
         return None
     return r.json()
 
-lottie_url = "https://assets2.lottiefiles.com/packages/lf20_3vbOcw.json"
-processing_lottie = "https://assets7.lottiefiles.com/packages/lf20_tijmpv.json"
+processing_lottie = "https://assets2.lottiefiles.com/packages/lf20_ygzjzv.json"  # Rocket style
+hello_lottie = "https://assets2.lottiefiles.com/packages/lf20_3vbOcw.json"
 done_lottie = "https://assets1.lottiefiles.com/packages/lf20_myejiggj.json"
 
-lottie_json = load_lottie_url(lottie_url)
 processing_json = load_lottie_url(processing_lottie)
 done_json = load_lottie_url(done_lottie)
+hello_json = load_lottie_url(hello_lottie)
 
 # ---------- UI CONFIGURATION ----------
 st.set_page_config(layout="wide")
-if lottie_json:
-    st_lottie(lottie_json, height=200, key="animation")
+if hello_json and "files_uploaded" not in st.session_state:
+    st_lottie(hello_json, height=200, key="hello")
 st.markdown("<h2 style='text-align: center;'>📄 AI Invoice Extractor (ChatGPT)</h2>", unsafe_allow_html=True)
 st.markdown("Upload scanned PDF invoices and extract clean finance data using ChatGPT Vision")
 st.markdown("---")
@@ -93,8 +93,8 @@ def convert_pdf_first_page(pdf_bytes):
 
 # ---------- PDF UPLOAD ----------
 uploaded_files = st.file_uploader("📤 Upload scanned invoice PDFs", type=["pdf"], accept_multiple_files=True)
-
 if uploaded_files:
+    st.session_state["files_uploaded"] = True
     if processing_json:
         st_lottie(processing_json, height=180, key="processing")
     total_files = len(uploaded_files)
@@ -116,10 +116,8 @@ if uploaded_files:
                 tmp.write(file.read())
                 temp_file_path = tmp.name
 
-            st.write(f"Uploading '{os.path.basename(temp_file_path)}' to temporary location...")
             pdf_data = open(temp_file_path, "rb").read()
             first_image = convert_pdf_first_page(pdf_data)
-            st.write(f"'{os.path.basename(temp_file_path)}' uploaded and converted to image.")
 
             with st.spinner("🧠 Extracting data using ChatGPT..."):
                 img_buf = io.BytesIO()
@@ -173,14 +171,13 @@ if uploaded_files:
         finally:
             if temp_file_path and os.path.exists(temp_file_path):
                 os.unlink(temp_file_path)
-                st.write(f"Deleted temporary local file: {temp_file_path}")
 
 # ---------- DISPLAY RESULTS ----------
 results = list(st.session_state["processed_results"].values())
 if results:
     if done_json:
         st_lottie(done_json, height=180, key="complete")
-    st.success("🎉 Yippie! All invoices processed with a smile 😊")
+    st.markdown("<h3 style='text-align: center;'>🎉 Yippie! All invoices processed with a smile 😊</h3>", unsafe_allow_html=True)
     df = pd.DataFrame(results, columns=columns)
     df.insert(0, "S. No", range(1, len(df) + 1))
     st.dataframe(df)
