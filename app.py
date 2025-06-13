@@ -47,13 +47,27 @@ if uploaded_files:
         st.image(first_image, caption=f"Preview of {file.name}", use_column_width=True)
 
         with st.spinner("Extracting data using Gemini..."):
-            prompt = """
-            You are a professional finance assistant. Extract the following fields from the invoice image:
-            Vendor Name, Invoice No, Invoice Date, Expense Ledger (like Office Supplies, Travel, Legal Fees, etc.),
-            GST Type (IGST or CGST+SGST or NA), Tax Rate (%, single value), Basic Amount,
-            CGST, SGST, IGST, Total Payable, Narration (short sentence),
-            GST Input Eligible (Yes/No — No if travel, food, hotel, etc.),
-            TD...
+            prompt = (
+                "You are a professional finance assistant. Extract the following fields from the invoice image:
+"
+                "Vendor Name, Invoice No, Invoice Date, Expense Ledger (like Office Supplies, Travel, Legal Fees, etc.),
+"
+                "GST Type (IGST or CGST+SGST or NA), Tax Rate (%, single value), Basic Amount,
+"
+                "CGST, SGST, IGST, Total Payable, Narration (short sentence),
+"
+                "GST Input Eligible (Yes/No — No if travel, food, hotel, etc.),
+"
+                "TDS Applicable (Yes/No), TDS Rate (in % if applicable).
+"
+                "Respond with CSV-style values in this exact order:
+"
+                "Vendor Name, Invoice No, Invoice Date, Expense Ledger,
+"
+                "GST Type, Tax Rate, Basic Amount, CGST, SGST, IGST,
+"
+                "Total Payable, Narration, GST Input Eligible, TDS Applicable, TDS Rate."
+            )
 
             try:
                 response = model.generate_content([first_image, prompt])
