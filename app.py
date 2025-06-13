@@ -19,7 +19,12 @@ def load_lottie_url(url):
     return r.json()
 
 lottie_url = "https://assets2.lottiefiles.com/packages/lf20_3vbOcw.json"
+processing_lottie = "https://assets7.lottiefiles.com/packages/lf20_tijmpv.json"
+done_lottie = "https://assets1.lottiefiles.com/packages/lf20_myejiggj.json"
+
 lottie_json = load_lottie_url(lottie_url)
+processing_json = load_lottie_url(processing_lottie)
+done_json = load_lottie_url(done_lottie)
 
 # ---------- UI CONFIGURATION ----------
 st.set_page_config(layout="wide")
@@ -87,6 +92,7 @@ def convert_pdf_first_page(pdf_bytes):
 uploaded_files = st.file_uploader("📤 Upload scanned invoice PDFs", type=["pdf"], accept_multiple_files=True)
 
 if uploaded_files:
+    st_lottie(processing_json, height=180, key="processing")
     for idx, file in enumerate(uploaded_files):
         file_name = file.name
 
@@ -159,6 +165,7 @@ if uploaded_files:
 # ---------- DISPLAY RESULTS ----------
 results = list(st.session_state["processed_results"].values())
 if results:
+    st_lottie(done_json, height=180, key="complete")
     df = pd.DataFrame(results, columns=columns)
     df.insert(0, "S. No", range(1, len(df) + 1))
     st.success("✅ All invoices processed!")
@@ -166,6 +173,5 @@ if results:
 
     csv_data = df.to_csv(index=False).encode("utf-8")
     st.download_button("📥 Download Results as CSV", csv_data, "invoice_results.csv", "text/csv")
-    st.balloons()
 else:
     st.info("Upload one or more scanned invoices to get started.")
