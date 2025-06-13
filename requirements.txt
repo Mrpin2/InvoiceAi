@@ -1,8 +1,8 @@
 streamlit
+streamlit-lottie
+requests
 google-generativeai
 openai
 pandas
 pdf2image
 Pillow
-base64
-streamlit-lottie
