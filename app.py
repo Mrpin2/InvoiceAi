@@ -54,6 +54,8 @@ if "processed_results" not in st.session_state:
     st.session_state["processed_results"] = {}
 if "processing_status" not in st.session_state:
     st.session_state["processing_status"] = {}
+if "summary_rows" not in st.session_state:
+    st.session_state["summary_rows"] = []
 
 # ---------- Sidebar Config ----------
 st.sidebar.header("🔐 AI Config")
@@ -102,10 +104,6 @@ uploaded_files = st.file_uploader("📤 Upload scanned invoice PDFs", type=["pdf
 
 if uploaded_files:
     st.session_state["files_uploaded"] = True
-    st.markdown(
-        f"<div style='text-align:center;'><img src='{processing_gif_url}' height='180px'><br><b>Processing! Hold On...</b></div>",
-        unsafe_allow_html=True
-    )
 
     total_files = len(uploaded_files)
     completed_count = 0
@@ -185,6 +183,8 @@ if uploaded_files:
 # ---------- Display Results ----------
 results = list(st.session_state["processed_results"].values())
 if results:
+    if hello_json:
+        st_lottie(hello_json, height=180, key="hello_end")
     if rocket_json:
         st_lottie(rocket_json, height=180, key="rocket")
     if pop_json:
@@ -200,5 +200,10 @@ if results:
 
     csv_data = df.to_csv(index=False).encode("utf-8")
     st.download_button("📥 Download Results as CSV", csv_data, "invoice_results.csv", "text/csv")
+
+    # Show balloons if summary_rows are present
+    st.markdown(f"---")
+    if st.session_state.summary_rows:
+        st.balloons()
 else:
     st.info("Upload one or more scanned invoices to get started.")
