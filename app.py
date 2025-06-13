@@ -1,4 +1,8 @@
-import streamlit as st st.set_page_config(layout="wide")  # MUST be first
+import streamlit as st
+
+Streamlit config must be the very first Streamlit statement
+
+st.set_page_config(layout="wide")  # MUST be first
 
 from PIL import Image import fitz  # PyMuPDF import io import pandas as pd import base64 import requests import traceback from streamlit_lottie import st_lottie from openai import OpenAI import tempfile import os
 
@@ -34,9 +38,9 @@ client = OpenAI(api_key=openai_api_key)
 
 ---------- Extraction Prompt ----------
 
-main_prompt = """ You are an invoice‑extraction assistant.
+main_prompt = """ You are an invoice-extraction assistant.
 
-Reply exactly one of: • NOT AN INVOICE — if the document is clearly not an invoice • a single comma‑separated line in the field order below
+Reply exactly one of: • NOT AN INVOICE — if the document is clearly not an invoice • a single comma-separated line in the field order below
 
 Field order Vendor Name, Invoice No, Tax ID (GSTIN/EIN/VAT), HSN/SAC, Buyer Name, Place of Supply, Invoice Date, Expense Ledger, Tax Type, Tax Rate %, Basic Amount, CGST, SGST, IGST/Sales Tax, Total Payable, Narration, GST Input Eligible (Yes/No/Uncertain), TDS Applicable (Yes/No/Section/Uncertain), TDS Rate
 
@@ -44,18 +48,18 @@ Rules
 
 DATES
 • If the vendor is Indian (Indian address or a valid GSTIN) → output date as DD/MM/YYYY
-• Otherwise keep the invoice’s visible date format (MM/DD/YYYY or YYYY‑MM‑DD)
+• Otherwise keep the invoice’s visible date format (MM/DD/YYYY or YYYY-MM-DD)
 
 TAX ID VALIDATION
-• GSTIN ⇒ exactly 15 alphanumeric characters; if length ≠ 15 or format wrong → MISSING
-• EIN ⇒ 9 digits in the form NN‑NNNNNNN
+• GSTIN ⇒ exactly 15 alphanumeric characters; if length ≠ 15 or format wrong → MISSING
+• EIN ⇒ 9 digits in the form NN-NNNNNNN
 • VAT ⇒ use if explicitly labelled VAT
 • Never output GSTIN when the vendor country is not India; output MISSING instead.
 • If multiple tax IDs are present, choose the one that matches the vendor’s country.
 
 TAX TYPE & BREAKDOWN
 • India → Tax Type = GST and extract CGST, SGST, IGST separately
-• International → Tax Type = VAT or Sales Tax and put total tax in IGST/Sales Tax column
+• International → Tax Type = VAT or Sales Tax and put total tax in IGST/Sales Tax column
 
 HSN/SAC & SERVICE DETECTION
 • If code is 8 digits and starts with “99” OR description contains “service”/“consulting”/“professional” → treat as Service (SAC)
@@ -71,7 +75,7 @@ MISSING DATA
 • Amounts that are zero or blank → 0.0
 
 OTHER GUIDELINES
-• Ignore logos, repeat headers/footers, and boiler‑plate text.
+• Ignore logos, repeat headers/footers, and boiler-plate text.
 • Invoice No must be unique; if only the word “Invoice” appears → MISSING
 • Extract only what is visibly present; never invent data. """
 
@@ -142,8 +146,6 @@ for idx, file in enumerate(uploaded_files):
                     except Exception:
                         pass
                 if not matched:
-                    result_row = [file_name] + ["NOT AN INVOICE"] + ["-"] * (len(columns) - 2)
+                    result_row = [file
 
-            st.session_state["processed_results"][file_name] = result_row
-            st.session_state["processing_status"][file
-
+                                  
