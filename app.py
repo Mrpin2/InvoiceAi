@@ -1,8 +1,8 @@
 import streamlit as st
-from pdf2image import convert_from_bytes
 from PIL import Image
 import google.generativeai as genai
 import openai
+import fitz  # PyMuPDF
 import io
 import pandas as pd
 import base64
@@ -33,12 +33,12 @@ columns = [
     "Total Payable", "Narration", "GST Input Eligible", "TDS Applicable", "TDS Rate"
 ]
 
-# ---------- SIDEBAR AUTH ----------
+# ---------- Sidebar Auth ----------
 st.sidebar.header("🔐 AI Config")
 passcode = st.sidebar.text_input("Admin Passcode (optional)", type="password")
 admin_unlocked = passcode == "Essenbee"
 
-# ---------- KEY & MODEL LOGIC ----------
+# ---------- Model Selection ----------
 ai_model = None
 model_choice = None
 gemini_api_key = None
@@ -55,7 +55,7 @@ if admin_unlocked:
         ai_model = genai.GenerativeModel("gemini-1.5-flash-latest")
 
     elif model_choice == "ChatGPT":
-        openai_api_key = "sk-admin-openai-key-here"  # Replace with your real key
+        openai_api_key = "sk-admin-openai-key-here"  # <-- Replace with your real admin key
         openai.api_key = openai_api_key
 
 else:
@@ -70,6 +70,13 @@ else:
         if openai_api_key:
             openai.api_key = openai_api_key
 
+# ---------- PDF to Image ----------
+def convert_pdf_first_page(pdf_bytes):
+    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+    page = doc.load_page(0)
+    pix = page.get_pixmap(dpi=200)
+    return Image.open(io.BytesIO(pix.tobytes("png")))
+
 # ---------- PDF UPLOAD ----------
 uploaded_files = st.file_uploader("📤 Upload scanned invoice PDFs", type=["pdf"], accept_multiple_files=True)
 
@@ -78,8 +85,7 @@ if uploaded_files:
     for file in uploaded_files:
         st.subheader(f"📄 Processing: {file.name}")
         try:
-            images = convert_from_bytes(file.read(), dpi=200)
-            first_image = images[0]
+            first_image = convert_pdf_first_page(file.read())
             st.image(first_image, caption=f"{file.name}", use_container_width=True)
         except Exception as e:
             st.error(f"❌ Error reading PDF: {e}")
