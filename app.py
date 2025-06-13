@@ -51,9 +51,12 @@ if admin_unlocked:
     model_choice = st.sidebar.radio("Use which AI?", ["Gemini", "ChatGPT"])
 
     if model_choice == "Gemini":
-        gemini_api_key = "AIzaSyA5Jnd7arMlbZ1x_ZpiE-AezrmsaXams7Y"
-        genai.configure(api_key=gemini_api_key)
-        ai_model = genai.GenerativeModel("gemini-1.5-flash-latest")
+        gemini_api_key = st.secrets.get("GEMINI_API_KEY")
+        if gemini_api_key:
+            genai.configure(api_key=gemini_api_key)
+            ai_model = genai.GenerativeModel("gemini-1.5-flash-latest")
+        else:
+            st.sidebar.error("🔑 GEMINI_API_KEY not found in Streamlit secrets.")
 
     elif model_choice == "ChatGPT":
         openai_api_key = "sk-admin-openai-key-here"
