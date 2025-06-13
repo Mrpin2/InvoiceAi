@@ -34,6 +34,10 @@ columns = [
     "Total Payable", "Narration", "GST Input Eligible", "TDS Applicable", "TDS Rate"
 ]
 
+# ---------- Session State Init ----------
+if "processed_results" not in st.session_state:
+    st.session_state["processed_results"] = {}
+
 # ---------- Sidebar Auth ----------
 st.sidebar.header("🔐 AI Config")
 passcode = st.sidebar.text_input("Admin Passcode (optional)", type="password")
@@ -114,21 +118,26 @@ def convert_pdf_first_page(pdf_bytes):
 # ---------- PDF UPLOAD ----------
 uploaded_files = st.file_uploader("📤 Upload scanned invoice PDFs", type=["pdf"], accept_multiple_files=True)
 
-results = []
 if uploaded_files:
     for file in uploaded_files:
-        st.subheader(f"📄 Processing: {file.name}")
+        file_name = file.name
+
+        # Skip if already processed
+        if file_name in st.session_state["processed_results"]:
+            continue
+
+        st.subheader(f"📄 Processing: {file_name}")
         try:
             pdf_data = file.read()
             first_image = convert_pdf_first_page(pdf_data)
         except Exception as e:
             st.error(f"❌ Error reading PDF: {e}")
+            st.session_state["processed_results"][file_name] = [file_name] + ["NOT AN INVOICE"] + ["-"] * (len(columns) - 2)
             continue
 
         with st.spinner("🧠 Extracting data using AI..."):
             csv_line = ""
             try:
-                # Gemini: stateless per file
                 if model_choice == "Gemini" and gemini_api_key:
                     temp_model = genai.GenerativeModel("gemini-1.5-flash-latest")
                     response = temp_model.generate_content([first_image, strict_prompt])
@@ -156,42 +165,36 @@ if uploaded_files:
                         max_tokens=1000
                     )
                     csv_line = response.choices[0].message.content.strip()
-
                 else:
                     raise Exception("❌ No valid API key provided.")
 
-                # ---------- Result Parsing ----------
                 if csv_line.upper().startswith("NOT AN INVOICE") or is_placeholder_row(csv_line):
-                    results.append([file.name] + ["NOT AN INVOICE"] + ["-"] * (len(columns) - 2))
+                    result_row = [file_name] + ["NOT AN INVOICE"] + ["-"] * (len(columns) - 2)
                 else:
-                    lines = csv_line.strip().split("\n")
                     matched = False
-                    for line in lines:
+                    for line in csv_line.strip().split("\n"):
                         try:
                             row = [x.strip().strip('"') for x in line.split(",")]
                             if len(row) >= len(columns) - 1:
-                                row = row[:len(columns) - 1]
-                                results.append([file.name] + row)
+                                result_row = [file_name] + row[:len(columns) - 1]
                                 matched = True
                                 break
                         except Exception:
-                            st.warning(f"Skipping malformed row in {file.name}: {line}")
-
+                            pass
                     if not matched:
-                        st.warning(f"Could not parse {file.name} properly.")
-                        st.text_area(f"Raw Output ({file.name})", csv_line)
-                        results.append([file.name] + ["NOT AN INVOICE"] + ["-"] * (len(columns) - 2))
+                        result_row = [file_name] + ["NOT AN INVOICE"] + ["-"] * (len(columns) - 2)
+
+                st.session_state["processed_results"][file_name] = result_row
 
             except Exception as e:
-                st.error(f"❌ Error processing {file.name}: {e}")
-                st.text_area(f"Raw Output ({file.name})", traceback.format_exc())
-                results.append([file.name] + ["NOT AN INVOICE"] + ["-"] * (len(columns) - 2))
+                st.error(f"❌ Error processing {file_name}: {e}")
+                st.text_area(f"Raw Output ({file_name})", traceback.format_exc())
+                st.session_state["processed_results"][file_name] = [file_name] + ["NOT AN INVOICE"] + ["-"] * (len(columns) - 2)
 
 # ---------- DISPLAY RESULTS ----------
+results = list(st.session_state["processed_results"].values())
 if results:
     df = pd.DataFrame(results, columns=columns)
-
-    # Start serial number from 1
     df.index = df.index + 1
     df.reset_index(inplace=True)
     df.rename(columns={"index": "S. No"}, inplace=True)
@@ -204,4 +207,3 @@ if results:
     st.balloons()
 else:
     st.info("Upload one or more scanned invoices to get started.")
-
