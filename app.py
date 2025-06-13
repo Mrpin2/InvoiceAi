@@ -8,6 +8,7 @@ import pandas as pd
 import base64
 import requests
 from streamlit_lottie import st_lottie
+import csv  # ✅ Added for robust CSV parsing
 
 # ---------- Load Lottie Animation from URL ----------
 def load_lottie_url(url):
@@ -86,7 +87,7 @@ if uploaded_files:
         st.subheader(f"📄 Processing: {file.name}")
         try:
             first_image = convert_pdf_first_page(file.read())
-           # st.image(first_image, caption=f"{file.name}", use_container_width=True)
+            # st.image(first_image, caption=f"{file.name}", use_container_width=True)  # ❌ HIDE IMAGE
         except Exception as e:
             st.error(f"❌ Error reading PDF: {e}")
             continue
@@ -130,11 +131,10 @@ if uploaded_files:
                 else:
                     raise Exception("❌ No valid API key provided.")
 
-                import csv
-
-reader = csv.reader([csv_line])
-row = next(reader)
-row = [x.strip() for x in row]
+                # ✅ SAFELY PARSE CSV
+                reader = csv.reader([csv_line])
+                row = next(reader)
+                row = [x.strip() for x in row]
 
                 if len(row) != len(columns):
                     raise ValueError("Mismatch in extracted field count.")
