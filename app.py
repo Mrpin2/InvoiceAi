@@ -122,6 +122,7 @@ if uploaded_files:
     for file in uploaded_files:
         file_name = file.name
 
+        # Skip if already processed
         if file_name in st.session_state["processed_results"]:
             continue
 
@@ -198,29 +199,11 @@ if results:
     df.reset_index(inplace=True)
     df.rename(columns={"index": "S. No"}, inplace=True)
 
-    st.success("✅ All uploaded invoices have been processed successfully!")
-    st.dataframe(df, use_container_width=True)
+    st.success("✅ All invoices processed!")
+    st.dataframe(df)
 
-    # ---------- EXPORT OPTIONS ----------
-    csv = df.to_csv(index=False).encode("utf-8")
-    excel_buffer = io.BytesIO()
-    with pd.ExcelWriter(excel_buffer, engine="xlsxwriter") as writer:
-        df.to_excel(writer, index=False, sheet_name="Invoices")
-        writer.save()
-    excel_data = excel_buffer.getvalue()
-
-    col1, col2 = st.columns(2)
-    with col1:
-        st.download_button(
-            label="📥 Download CSV",
-            data=csv,
-            file_name="invoices_extracted.csv",
-            mime="text/csv"
-        )
-    with col2:
-        st.download_button(
-            label="📥 Download Excel",
-            data=excel_data,
-            file_name="invoices_extracted.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        )
+    csv = df.to_csv(index=False).encode()
+    st.download_button("📥 Download Extracted Data", csv, "invoice_data.csv", "text/csv")
+    st.balloons()
+else:
+    st.info("Upload one or more scanned invoices to get started.")
