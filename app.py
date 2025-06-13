@@ -30,7 +30,7 @@ st.markdown("---")
 
 # ---------- Table Columns ----------
 columns = [
-    "Vendor Name", "Invoice No", "Invoice Date", "Expense Ledger",
+    "File Name", "Vendor Name", "Invoice No", "Invoice Date", "Expense Ledger",
     "GST Type", "Tax Rate", "Basic Amount", "CGST", "SGST", "IGST",
     "Total Payable", "Narration", "GST Input Eligible", "TDS Applicable", "TDS Rate"
 ]
@@ -99,7 +99,8 @@ if uploaded_files:
 
         with st.spinner("🧠 Extracting data using AI..."):
             prompt = """
-            You are a professional finance assistant. Extract the following fields from the invoice image:
+            You are a professional finance assistant. Only process invoices. Ignore bank statements or non-invoice documents.
+            Extract the following fields from the invoice image:
             Vendor Name, Invoice No, Invoice Date, Expense Ledger (like Office Supplies, Travel, Legal Fees, etc.),
             GST Type (IGST or CGST+SGST or NA), Tax Rate (%, single value), Basic Amount,
             CGST, SGST, IGST, Total Payable, Narration (short sentence),
@@ -109,6 +110,7 @@ if uploaded_files:
             Vendor Name, Invoice No, Invoice Date, Expense Ledger,
             GST Type, Tax Rate, Basic Amount, CGST, SGST, IGST,
             Total Payable, Narration, GST Input Eligible, TDS Applicable, TDS Rate.
+            If the document is not an invoice, respond with 'NOT AN INVOICE'.
             """
             try:
                 if model_choice == "Gemini" and gemini_api_key:
@@ -136,12 +138,25 @@ if uploaded_files:
                 else:
                     raise Exception("❌ No valid API key provided.")
 
-                row = [x.strip() for x in csv_line.split(",")]
-                if len(row) != len(columns):
-                    st.warning(f"Field count mismatch for {file.name}. Got {len(row)}, expected {len(columns)}.")
+                if csv_line.strip().lower().startswith("not an invoice"):
+                    st.warning(f"Skipped {file.name} — AI determined it's not an invoice.")
+                    results.append([file.name] + ["NOT AN INVOICE"] + ["-"] * (len(columns) - 2))
+                    continue
+
+                valid_rows = []
+                for line in csv_line.splitlines():
+                    row = [x.strip() for x in line.split(",")]
+                    if len(row) == len(columns) - 1:
+                        valid_rows.append([file.name] + row)
+                    else:
+                        st.warning(f"Ignored a row in {file.name} due to field count mismatch: {line}")
+
+                if not valid_rows:
+                    st.warning(f"No valid rows found in {file.name}. Expected {len(columns) - 1} fields.")
                     st.text_area(f"Raw Output ({file.name})", csv_line)
                     continue
-                results.append(row)
+
+                results.extend(valid_rows)
 
             except Exception as e:
                 st.error(f"❌ Error processing {file.name}: {e}")
