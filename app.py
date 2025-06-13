@@ -54,7 +54,6 @@ if admin_unlocked:
         gemini_api_key = st.secrets.get("GEMINI_API_KEY")
         if gemini_api_key:
             genai.configure(api_key=gemini_api_key)
-            ai_model = genai.GenerativeModel("gemini-1.5-flash-latest")
         else:
             st.sidebar.error("🔑 GEMINI_API_KEY not found in Streamlit secrets.")
 
@@ -68,18 +67,10 @@ else:
         gemini_api_key = st.sidebar.text_input("🔑 Enter your Gemini API Key", type="password")
         if gemini_api_key:
             genai.configure(api_key=gemini_api_key)
-            ai_model = genai.GenerativeModel("gemini-1.5-flash-latest")
     elif model_choice == "ChatGPT":
         openai_api_key = st.sidebar.text_input("🔑 Enter your OpenAI API Key", type="password")
         if openai_api_key:
             openai.api_key = openai_api_key
-
-# ---------- PDF to Image ----------
-def convert_pdf_first_page(pdf_bytes):
-    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
-    page = doc.load_page(0)
-    pix = page.get_pixmap(dpi=200)
-    return Image.open(io.BytesIO(pix.tobytes("png")))
 
 # ---------- Prompts ----------
 strict_prompt = """
@@ -113,6 +104,13 @@ def is_placeholder_row(text):
     placeholder_keywords = ["Vendor Name", "Invoice No", "Invoice Date", "Expense Ledger"]
     return all(x.lower() in text.lower() for x in placeholder_keywords)
 
+# ---------- PDF to Image ----------
+def convert_pdf_first_page(pdf_bytes):
+    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+    page = doc.load_page(0)
+    pix = page.get_pixmap(dpi=200)
+    return Image.open(io.BytesIO(pix.tobytes("png")))
+
 # ---------- PDF UPLOAD ----------
 uploaded_files = st.file_uploader("📤 Upload scanned invoice PDFs", type=["pdf"], accept_multiple_files=True)
 
@@ -130,13 +128,14 @@ if uploaded_files:
         with st.spinner("🧠 Extracting data using AI..."):
             csv_line = ""
             try:
-                # ---------- First Attempt with Strict Prompt ----------
+                # Gemini: stateless per file
                 if model_choice == "Gemini" and gemini_api_key:
-                    response = ai_model.generate_content([first_image, strict_prompt])
+                    temp_model = genai.GenerativeModel("gemini-1.5-flash-latest")
+                    response = temp_model.generate_content([first_image, strict_prompt])
                     csv_line = response.text.strip()
+
                     if is_placeholder_row(csv_line):
-                        # Retry with soft prompt
-                        response_retry = ai_model.generate_content([first_image, soft_prompt])
+                        response_retry = temp_model.generate_content([first_image, soft_prompt])
                         csv_line = response_retry.text.strip()
 
                 elif model_choice == "ChatGPT" and openai_api_key:
@@ -191,6 +190,12 @@ if uploaded_files:
 # ---------- DISPLAY RESULTS ----------
 if results:
     df = pd.DataFrame(results, columns=columns)
+
+    # Start serial number from 1
+    df.index = df.index + 1
+    df.reset_index(inplace=True)
+    df.rename(columns={"index": "S. No"}, inplace=True)
+
     st.success("✅ All invoices processed!")
     st.dataframe(df)
 
@@ -199,3 +204,4 @@ if results:
     st.balloons()
 else:
     st.info("Upload one or more scanned invoices to get started.")
+
