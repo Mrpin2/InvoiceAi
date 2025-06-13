@@ -21,10 +21,14 @@ def load_lottie_url(url):
 processing_lottie = "https://assets2.lottiefiles.com/packages/lf20_ygzjzv.json"  # Rocket style
 hello_lottie = "https://assets2.lottiefiles.com/packages/lf20_3vbOcw.json"
 done_lottie = "https://assets1.lottiefiles.com/packages/lf20_myejiggj.json"
+pop_lottie = "https://assets6.lottiefiles.com/packages/lf20_jcikwtux.json"  # Celebration pop
+dance_lottie = "https://assets9.lottiefiles.com/packages/lf20_ydo1amjm.json"  # Dancing robot
 
 processing_json = load_lottie_url(processing_lottie)
 done_json = load_lottie_url(done_lottie)
 hello_json = load_lottie_url(hello_lottie)
+pop_json = load_lottie_url(pop_lottie)
+dance_json = load_lottie_url(dance_lottie)
 
 # ---------- UI CONFIGURATION ----------
 st.set_page_config(layout="wide")
@@ -177,6 +181,10 @@ results = list(st.session_state["processed_results"].values())
 if results:
     if done_json:
         st_lottie(done_json, height=180, key="complete")
+    if pop_json:
+        st_lottie(pop_json, height=160, key="popcelebrate")
+    if dance_json:
+        st_lottie(dance_json, height=260, key="robotdance")
     st.markdown("<h3 style='text-align: center;'>🎉 Yippie! All invoices processed with a smile 😊</h3>", unsafe_allow_html=True)
     df = pd.DataFrame(results, columns=columns)
     df.insert(0, "S. No", range(1, len(df) + 1))
