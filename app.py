@@ -1,4 +1,6 @@
 import streamlit as st
+st.set_page_config(layout="wide")  # MUST be first
+
 from PIL import Image
 import fitz  # PyMuPDF
 import io
@@ -11,11 +13,11 @@ from openai import OpenAI
 import tempfile
 import os
 
-# ---------- Lottie Animations ----------
+# ---------- Load Animations ----------
 hello_lottie = "https://assets1.lottiefiles.com/packages/lf20_touohxv0.json"
-rocket_lottie = "https://assets10.lottiefiles.com/packages/lf20_dyflv0zz.json"
+rocket_lottie = "https://assets2.lottiefiles.com/packages/lf20_ygzjzv.json"
 pop_lottie = "https://assets10.lottiefiles.com/packages/lf20_qp1q7mct.json"
-balloons_lottie = "https://assets4.lottiefiles.com/private_files/lf30_m3pibtur.json"
+balloons_lottie = "https://assets9.lottiefiles.com/packages/lf20_jtbfg2nb.json"
 processing_gif_url = "https://raw.githubusercontent.com/Mrpin2/InvoiceAi/main/processing.gif"
 
 def load_lottie_json_safe(url):
@@ -23,22 +25,15 @@ def load_lottie_json_safe(url):
         r = requests.get(url)
         r.raise_for_status()
         return r.json()
-    except requests.exceptions.RequestException as req_err:
-        st.warning(f"⚠️ Request error for {url}: {req_err}")
-    except ValueError:
-        st.warning(f"⚠️ Not a valid Lottie JSON at {url}")
-    except Exception as e:
-        st.warning(f"⚠️ Unexpected error for {url}: {e}")
-    return None
+    except Exception:
+        return None
 
 hello_json = load_lottie_json_safe(hello_lottie)
-processing_json = load_lottie_json_safe(rocket_lottie)
+rocket_json = load_lottie_json_safe(rocket_lottie)
 pop_json = load_lottie_json_safe(pop_lottie)
 balloon_json = load_lottie_json_safe(balloons_lottie)
 
-# ---------- UI CONFIGURATION ----------
-st.set_page_config(layout="wide")
-
+# ---------- UI HEADER ----------
 if "files_uploaded" not in st.session_state:
     if hello_json:
         st_lottie(hello_json, height=200, key="hello")
@@ -60,12 +55,11 @@ if "processed_results" not in st.session_state:
 if "processing_status" not in st.session_state:
     st.session_state["processing_status"] = {}
 
-# ---------- Sidebar Auth ----------
+# ---------- Sidebar Config ----------
 st.sidebar.header("🔐 AI Config")
 passcode = st.sidebar.text_input("Admin Passcode", type="password")
 admin_unlocked = passcode == "Essenbee"
 
-# ---------- API Key ----------
 openai_api_key = None
 if admin_unlocked:
     st.sidebar.success("🔓 Admin access granted.")
@@ -81,7 +75,7 @@ else:
 
 client = OpenAI(api_key=openai_api_key)
 
-# ---------- Prompt ----------
+# ---------- Extraction Prompt ----------
 main_prompt = """
 You are a professional assistant. Read this scanned document and extract the following:
 
@@ -97,18 +91,21 @@ def is_placeholder_row(text):
     placeholder_keywords = ["Vendor Name", "Invoice No", "Invoice Date", "Expense Ledger"]
     return all(x.lower() in text.lower() for x in placeholder_keywords)
 
-# ---------- Convert PDF to Image ----------
 def convert_pdf_first_page(pdf_bytes):
     doc = fitz.open(stream=pdf_bytes, filetype="pdf")
     page = doc.load_page(0)
     pix = page.get_pixmap(dpi=300)
     return Image.open(io.BytesIO(pix.tobytes("png")))
 
-# ---------- Upload PDFs ----------
+# ---------- PDF Upload ----------
 uploaded_files = st.file_uploader("📤 Upload scanned invoice PDFs", type=["pdf"], accept_multiple_files=True)
+
 if uploaded_files:
     st.session_state["files_uploaded"] = True
-    st.markdown(f"<div style='text-align:center;'><img src='{processing_gif_url}' height='180px'><br><b>Processing! Hold On...</b></div>", unsafe_allow_html=True)
+    st.markdown(
+        f"<div style='text-align:center;'><img src='{processing_gif_url}' height='180px'><br><b>Processing! Hold On...</b></div>",
+        unsafe_allow_html=True
+    )
 
     total_files = len(uploaded_files)
     completed_count = 0
@@ -188,8 +185,8 @@ if uploaded_files:
 # ---------- Display Results ----------
 results = list(st.session_state["processed_results"].values())
 if results:
-    if processing_json:
-        st_lottie(processing_json, height=180, key="complete")
+    if rocket_json:
+        st_lottie(rocket_json, height=180, key="rocket")
     if pop_json:
         st_lottie(pop_json, height=160, key="popcelebrate")
     if balloon_json:
