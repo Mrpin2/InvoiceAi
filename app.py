@@ -1,8 +1,4 @@
-import streamlit as st
-
-Streamlit config must be the very first Streamlit statement
-
-st.set_page_config(layout="wide")  # MUST be first
+import streamlit as st st.set_page_config(layout="wide")  # MUST be first
 
 from PIL import Image import fitz  # PyMuPDF import io import pandas as pd import base64 import requests import traceback from streamlit_lottie import st_lottie from openai import OpenAI import tempfile import os
 
@@ -146,6 +142,7 @@ for idx, file in enumerate(uploaded_files):
                     except Exception:
                         pass
                 if not matched:
-                    result_row = [file
+                    result_row = [file_name] + ["NOT AN INVOICE"] + ["-"] * (len(columns) - 2)
 
-                                  
+            st.session_state["processed_results"][file
+
