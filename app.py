@@ -1,247 +1,171 @@
 import streamlit as st
-from streamlit_lottie import st_lottie
-import requests
-from google import genai
-from pydantic import BaseModel, Field
-from typing import Optional
+from PIL import Image
+import openai
+import fitz  # PyMuPDF
+import io
 import pandas as pd
-import os
-import re
+import base64
+import requests
 import traceback
+from streamlit_lottie import st_lottie
 
-# Page config and layout
-st.set_page_config(page_title="Invoice Data Extractor", page_icon="💳", layout="centered")
-
-# Load Lottie animation from URL (adjust URL if needed)
-def load_lottie_url(url: str):
-    res = requests.get(url)
-    if res.status_code != 200:
+# ---------- Load Lottie Animation from URL ----------
+def load_lottie_url(url):
+    r = requests.get(url)
+    if r.status_code != 200:
         return None
-    return res.json()
+    return r.json()
 
-lottie_url = "https://assets4.lottiefiles.com/packages/lf20_TyP8dv.json"  # sample animation URL
+lottie_url = "https://assets2.lottiefiles.com/packages/lf20_3vbOcw.json"
 lottie_json = load_lottie_url(lottie_url)
-if lottie_json:
-    st_lottie(lottie_json, height=200)
 
-# Title and centered heading
-st.title("Invoice Data Extraction")
-st.markdown("<h2 style='text-align: center;'>Extract Data from Invoices</h2>", unsafe_allow_html=True)
+# ---------- UI CONFIGURATION ----------
+st.set_page_config(layout="wide")
+st_lottie(lottie_json, height=200, key="animation")
+st.markdown("<h2 style='text-align: center;'>\ud83d\udcc4 AI Invoice Extractor (ChatGPT)</h2>", unsafe_allow_html=True)
+st.markdown("Upload scanned PDF invoices and extract clean finance data using OpenAI GPT-4o-mini")
+st.markdown("---")
 
-# Sidebar for API settings
-st.sidebar.header("Settings")
-password = st.sidebar.text_input("Enter passcode to unlock API key input", type="password")
-if password == "Essenbee":
-    api_key = st.sidebar.text_input("Enter Google Gemini API Key", type="password")
+# ---------- Table Columns ----------
+columns = [
+    "File Name", "Vendor Name", "Invoice No", "Invoice Date", "Expense Ledger",
+    "GST Type", "Tax Rate", "Basic Amount", "CGST", "SGST", "IGST",
+    "Total Payable", "Narration", "GST Input Eligible", "TDS Applicable", "TDS Rate"
+]
+
+# ---------- Session State Init ----------
+if "processed_results" not in st.session_state:
+    st.session_state["processed_results"] = {}
+
+# ---------- API Key Setup ----------
+st.sidebar.header("\ud83d\udd10 Admin Access")
+passcode = st.sidebar.text_input("Admin Passcode", type="password")
+admin_unlocked = passcode == "Essenbee"
+
+openai_model = "gpt-4o-mini"
+if admin_unlocked:
+    st.sidebar.success("\ud83d\udd13 Admin access granted.")
+    openai.api_key = st.secrets["OPENAI_API_KEY"]
 else:
-    api_key = None
-    st.sidebar.warning("Enter the admin passcode to input the API key.")
-
-model_choice = st.sidebar.radio("Select Model", ["Google Gemini", "OpenAI ChatGPT"], index=0)
-if model_choice == "OpenAI ChatGPT":
-    st.sidebar.info("ChatGPT mode is not available yet. Using Google Gemini.")
-    model_choice = "Google Gemini"
-
-# Require API key for Gemini
-if model_choice == "Google Gemini" and not api_key:
-    st.warning("Please enter the API key for Google Gemini in the sidebar.")
+    st.sidebar.warning("Enter admin passcode to unlock GPT access.")
     st.stop()
 
-# Initialize Gemini client
-try:
-    client = genai.Client(api_key=api_key)
-except Exception as e:
-    st.error("Failed to initialize Gemini API client. Check the API key.")
-    st.stop()
+# ---------- Prompts ----------
+strict_prompt = """
+You are a professional finance assistant. If the uploaded document is NOT a proper GST invoice
+(e.g., if it's a bank statement, email, quote, or missing required fields), respond with exactly:
+NOT AN INVOICE
 
-# Define Pydantic model for structured invoice data
-class InvoiceData(BaseModel):
-    seller_name: Optional[str] = Field(None, description="Vendor or seller name")
-    invoice_no: Optional[str] = Field(None, description="Invoice number")
-    invoice_date: Optional[str] = Field(None, description="Invoice date")
-    seller_gstin: Optional[str] = Field(None, description="GSTIN of the seller")
-    total_gross: Optional[str] = Field(None, description="Total invoice amount (gross)")
-    cgst: Optional[str] = Field(None, description="CGST amount")
-    sgst: Optional[str] = Field(None, description="SGST amount")
-    igst: Optional[str] = Field(None, description="IGST amount")
-    buyer_gstin: Optional[str] = Field(None, description="GSTIN of the buyer")
-    expense_ledger: Optional[str] = Field(None, description="Suggested expense ledger/category")
-    tds: Optional[str] = Field(None, description="TDS deduction (Yes/No or percentage)")
-    place_of_supply: Optional[str] = Field(None, description="Place of Supply")
+Otherwise, extract the following values from the invoice:
 
-# Session state to cache results
-if 'processed_files' not in st.session_state:
-    st.session_state['processed_files'] = {}
+Vendor Name, Invoice No, Invoice Date, Expense Ledger (like Office Supplies, Travel, Legal Fees, etc.),
+GST Type (IGST or CGST+SGST or NA), Tax Rate (%, only the rate like 5, 12, 18), Basic Amount (before tax),
+CGST, SGST, IGST, Total Payable (after tax), Narration (short meaningful line about the expense),
+GST Input Eligible (Yes/No — mark No if food, hotel, travel), TDS Applicable (Yes/No), TDS Rate (%)
 
-# File uploader (multiple PDFs)
-uploaded_files = st.file_uploader("Upload Invoice PDF files", type=["pdf"], accept_multiple_files=True)
+⚠️ Output a single comma-separated line of values (no headers, no multi-line, no bullets, no quotes).
+⚠️ Do NOT echo the field names or table headings. If key values are missing, return:
+NOT AN INVOICE
+"""
 
-# Process extraction when button is clicked
+soft_prompt = """
+You are a helpful assistant. Read this invoice image and extract the fields below. If any field is missing, it's okay to leave it blank but try your best.
+
+Return one line of comma-separated values in this exact order:
+Vendor Name, Invoice No, Invoice Date, Expense Ledger, GST Type, Tax Rate, Basic Amount,
+CGST, SGST, IGST, Total Payable, Narration, GST Input Eligible, TDS Applicable, TDS Rate.
+
+Do not add extra text or comments. Just give the line of values only.
+"""
+
+def is_placeholder_row(text):
+    placeholder_keywords = ["Vendor Name", "Invoice No", "Invoice Date", "Expense Ledger"]
+    return all(x.lower() in text.lower() for x in placeholder_keywords)
+
+# ---------- PDF to Image ----------
+def convert_pdf_first_page(pdf_bytes):
+    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+    page = doc.load_page(0)
+    pix = page.get_pixmap(dpi=200)
+    return Image.open(io.BytesIO(pix.tobytes("png")))
+
+# ---------- PDF UPLOAD ----------
+uploaded_files = st.file_uploader("\ud83d\udcc4 Upload scanned invoice PDFs", type=["pdf"], accept_multiple_files=True)
+
 if uploaded_files:
-    if st.button("Extract Data"):
-        # Create temp directory for saving uploaded files
-        temp_dir = "temp_uploads"
-        if not os.path.isdir(temp_dir):
-            os.makedirs(temp_dir)
-        for file in uploaded_files:
-            file_name = file.name
-            # Skip if already processed
-            if file_name in st.session_state['processed_files']:
-                continue
+    for file in uploaded_files:
+        file_name = file.name
+
+        # Skip if already processed
+        if file_name in st.session_state["processed_results"]:
+            continue
+
+        st.subheader(f"\ud83d\udcc4 Processing: {file_name}")
+        try:
+            pdf_data = file.read()
+            first_image = convert_pdf_first_page(pdf_data)
+        except Exception as e:
+            st.error(f"❌ Error reading PDF: {e}")
+            st.session_state["processed_results"][file_name] = [file_name] + ["NOT AN INVOICE"] + ["-"] * (len(columns) - 2)
+            continue
+
+        with st.spinner("\ud83e\uddd0 Extracting data using GPT-4o-mini..."):
+            csv_line = ""
             try:
-                # Save file to disk
-                file_path = os.path.join(temp_dir, file_name)
-                with open(file_path, "wb") as f:
-                    f.write(file.getvalue())
-                # Upload to Gemini Files API
-                uploaded_file = client.files.upload(file=file_path, config={'display_name': file_name})
-                # Prompt for extraction
-                prompt = "Extract all relevant invoice details from this file."
-                # Generate structured JSON output
-                response = client.models.generate_content(
-                    model="gemini-2.0-pro-vision",
-                    contents=[prompt, uploaded_file],
-                    config={
-                        "response_mime_type": "application/json",
-                        "response_schema": InvoiceData
-                    }
+                img_buf = io.BytesIO()
+                first_image.save(img_buf, format="PNG")
+                img_buf.seek(0)
+                base64_image = base64.b64encode(img_buf.read()).decode()
+                chat_prompt = [
+                    {"role": "system", "content": "You are a finance assistant."},
+                    {"role": "user", "content": [
+                        {"type": "text", "text": strict_prompt},
+                        {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{base64_image}"}}
+                    ]}
+                ]
+                response = openai.ChatCompletion.create(
+                    model=openai_model,
+                    messages=chat_prompt,
+                    max_tokens=1000
                 )
-                result: InvoiceData = response.parsed  # Parsed Pydantic model
-                if result is None:
-                    # If parsing failed or no structured data, mark as not an invoice
-                    st.session_state['processed_files'][file_name] = {"Vendor Name": "NOT AN INVOICE"}
+                csv_line = response.choices[0].message.content.strip()
+
+                if is_placeholder_row(csv_line) or csv_line.upper().startswith("NOT AN INVOICE"):
+                    result_row = [file_name] + ["NOT AN INVOICE"] + ["-"] * (len(columns) - 2)
                 else:
-                    data = result.model_dump()
-                    # If key fields missing, treat as not an invoice
-                    if not data.get("seller_name") or not data.get("invoice_no"):
-                        st.session_state['processed_files'][file_name] = {"Vendor Name": "NOT AN INVOICE"}
-                    else:
-                        # Helper to parse numeric strings
-                        def parse_number(val) -> float:
-                            if val is None:
-                                return 0.0
-                            s = ''.join(ch for ch in str(val) if (ch.isdigit() or ch in '.-'))
-                            if s == '' or s == '.' or s == '-' or s == '-.':
-                                return 0.0
-                            try:
-                                return float(s)
-                            except:
-                                return 0.0
-                        # Parse numeric fields
-                        cgst_val = parse_number(data.get('cgst'))
-                        sgst_val = parse_number(data.get('sgst'))
-                        igst_val = parse_number(data.get('igst'))
-                        total_val = parse_number(data.get('total_gross'))
-                        # Compute basic amount (before GST)
-                        if igst_val and igst_val > 0:
-                            basic_amount = total_val - igst_val
-                        else:
-                            basic_amount = total_val - (cgst_val + sgst_val)
-                        # Determine GST Type and Tax Rate
-                        if igst_val and igst_val > 0:
-                            gst_type = "IGST"
-                            tax_rate = f"{round((igst_val / basic_amount) * 100)}%" if basic_amount else ""
-                        elif cgst_val or sgst_val:
-                            gst_type = "CGST/SGST"
-                            tax_rate = f"{round(((cgst_val + sgst_val) / basic_amount) * 100)}%" if basic_amount else ""
-                        else:
-                            gst_type = ""
-                            tax_rate = ""
-                        # Determine GST Input Eligible (Yes if GST present and buyer/seller GSTIN exist)
-                        gst_input_eligible = "Yes" if data.get('buyer_gstin') and data.get('seller_gstin') and (cgst_val > 0 or sgst_val > 0 or igst_val > 0) else "No"
-                        # Determine TDS Applicable and Rate
-                        tds_applicable = "No"
-                        tds_rate = ""
-                        tds_str = (data.get('tds') or "").strip()
-                        if tds_str:
-                            tds_lower = tds_str.lower()
-                            # Check if any number in TDS field
-                            match = re.search(r'(\d+)\s*%?', tds_lower)
-                            if match:
-                                tds_applicable = "Yes"
-                                tds_rate_val = match.group(1)
-                                tds_rate = tds_rate_val + "%" if "%" not in tds_str else match.group(0)
-                            elif "yes" in tds_lower:
-                                tds_applicable = "Yes"
-                            elif "no" in tds_lower:
-                                tds_applicable = "No"
-                        # Calculate TDS amount if applicable
-                        tds_amount = 0.0
-                        if tds_applicable == "Yes" and tds_rate:
-                            try:
-                                tds_percent = float(tds_rate.replace('%', ''))
-                                tds_amount = basic_amount * (tds_percent / 100.0)
-                            except:
-                                tds_amount = 0.0
-                        # Compute total payable after TDS deduction
-                        total_payable = total_val - tds_amount
-                        # Build narration string
-                        narration = f"Being {data.get('expense_ledger') or 'expense'} as per Invoice {data.get('invoice_no')} dated {data.get('invoice_date')} from {data.get('seller_name')}."
-                        # Store the structured result
-                        st.session_state['processed_files'][file_name] = {
-                            "File Name": file_name,
-                            "Vendor Name": data.get('seller_name', ''),
-                            "Invoice No": data.get('invoice_no', ''),
-                            "Invoice Date": data.get('invoice_date', ''),
-                            "Expense Ledger": data.get('expense_ledger', ''),
-                            "GST Type": gst_type,
-                            "Tax Rate": tax_rate,
-                            "Basic Amount": f"{basic_amount:.2f}",
-                            "CGST": data.get('cgst', '') or "0",
-                            "SGST": data.get('sgst', '') or "0",
-                            "IGST": data.get('igst', '') or "0",
-                            "Total Payable": f"{total_payable:.2f}",
-                            "Narration": narration,
-                            "GST Input Eligible": gst_input_eligible,
-                            "TDS Applicable": tds_applicable,
-                            "TDS Rate": tds_rate
-                        }
+                    matched = False
+                    for line in csv_line.strip().split("\n"):
+                        try:
+                            row = [x.strip().strip('"') for x in line.split(",")]
+                            if len(row) >= len(columns) - 1:
+                                result_row = [file_name] + row[:len(columns) - 1]
+                                matched = True
+                                break
+                        except Exception:
+                            pass
+                    if not matched:
+                        result_row = [file_name] + ["NOT AN INVOICE"] + ["-"] * (len(columns) - 2)
+
+                st.session_state["processed_results"][file_name] = result_row
+
             except Exception as e:
-                # On any error, display traceback and mark file as processed (skip in future)
-                st.error(f"Error processing file {file_name}:")
-                st.exception(e)
-                st.session_state['processed_files'][file_name] = {"Vendor Name": "NOT AN INVOICE"}
-        # Build results table from session state for currently uploaded files
-        results = []
-        for file in uploaded_files:
-            fname = file.name
-            if fname in st.session_state['processed_files']:
-                row = st.session_state['processed_files'][fname]
-                if row.get("Vendor Name") == "NOT AN INVOICE":
-                    # File not recognized as invoice or error
-                    results.append({
-                        "File Name": fname,
-                        "Vendor Name": "NOT AN INVOICE",
-                        "Invoice No": "",
-                        "Invoice Date": "",
-                        "Expense Ledger": "",
-                        "GST Type": "",
-                        "Tax Rate": "",
-                        "Basic Amount": "",
-                        "CGST": "",
-                        "SGST": "",
-                        "IGST": "",
-                        "Total Payable": "",
-                        "Narration": "",
-                        "GST Input Eligible": "",
-                        "TDS Applicable": "",
-                        "TDS Rate": ""
-                    })
-                else:
-                    results.append(row)
-        if results:
-            # Add serial number column
-            for i, res in enumerate(results, start=1):
-                res["S.No"] = i
-            # Create DataFrame with specified column order
-            cols = ["S.No", "File Name", "Vendor Name", "Invoice No", "Invoice Date", "Expense Ledger",
-                    "GST Type", "Tax Rate", "Basic Amount", "CGST", "SGST", "IGST",
-                    "Total Payable", "Narration", "GST Input Eligible", "TDS Applicable", "TDS Rate"]
-            df = pd.DataFrame(results)[cols]
-            st.success("Extraction completed!")
-            st.dataframe(df, use_container_width=True)
-            # Download button for CSV
-            csv_data = df.to_csv(index=False).encode('utf-8')
-            st.download_button("Download Results as CSV", csv_data, "invoice_results.csv", "text/csv")
-            # Celebration balloons
-            st.balloons()
+                st.error(f"❌ Error processing {file_name}: {e}")
+                st.text_area(f"Raw Output ({file_name})", traceback.format_exc())
+                st.session_state["processed_results"][file_name] = [file_name] + ["NOT AN INVOICE"] + ["-"] * (len(columns) - 2)
+
+# ---------- DISPLAY RESULTS ----------
+results = list(st.session_state["processed_results"].values())
+if results:
+    df = pd.DataFrame(results, columns=columns)
+    df.index = df.index + 1
+    df.reset_index(inplace=True)
+    df.rename(columns={"index": "S. No"}, inplace=True)
+
+    st.success("\u2705 All invoices processed!")
+    st.dataframe(df)
+
+    csv = df.to_csv(index=False).encode()
+    st.download_button("\ud83d\udcc5 Download Extracted Data", csv, "invoice_data.csv", "text/csv")
+    st.balloons()
+else:
+    st.info("Upload one or more scanned invoices to get started.")
