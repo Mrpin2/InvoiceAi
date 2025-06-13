@@ -1,9 +1,12 @@
-                row = [x.strip().strip('"') for x in line.split(",")]
-                if len(row) >= len(columns) - 1:
-                    row = row[:len(columns) - 1]
-                    results.append([file.name] + row)
-                    matched = True
-                    break
+                try:
+                    row = [x.strip().strip('"') for x in line.split(",")]
+                    if len(row) >= len(columns) - 1:
+                        row = row[:len(columns) - 1]
+                        results.append([file.name] + row)
+                        matched = True
+                        break
+                except Exception as parse_error:
+                    st.warning(f"Skipping malformed row in {file.name}: {line}")
 
             if not matched:
                 st.warning(f"Likely not invoice or could not parse {file.name}.")
