@@ -11,23 +11,37 @@ from openai import OpenAI
 import tempfile
 import os
 
-# ---------- Load Assets ----------
-hello_lottie = "https://assets1.lottiefiles.com/packages/lf20_puciaact.json"
-rocket_lottie = "https://assets2.lottiefiles.com/packages/lf20_ygzjzv.json"
-pop_lottie = "https://assets6.lottiefiles.com/packages/lf20_jcikwtux.json"
-balloons_lottie = "https://assets9.lottiefiles.com/packages/lf20_jtbfg2nb.json"
-
-hello_json = requests.get(hello_lottie).json()
+# ---------- Lottie Animations ----------
+hello_lottie = "https://assets1.lottiefiles.com/packages/lf20_touohxv0.json"
+rocket_lottie = "https://assets10.lottiefiles.com/packages/lf20_dyflv0zz.json"
+pop_lottie = "https://assets10.lottiefiles.com/packages/lf20_qp1q7mct.json"
+balloons_lottie = "https://assets4.lottiefiles.com/private_files/lf30_m3pibtur.json"
 processing_gif_url = "https://raw.githubusercontent.com/Mrpin2/InvoiceAi/main/processing.gif"
-processing_json = requests.get(rocket_lottie).json()
-pop_json = requests.get(pop_lottie).json()
-balloon_json = requests.get(balloons_lottie).json()
+
+def load_lottie_json_safe(url):
+    try:
+        r = requests.get(url)
+        r.raise_for_status()
+        return r.json()
+    except requests.exceptions.RequestException as req_err:
+        st.warning(f"⚠️ Request error for {url}: {req_err}")
+    except ValueError:
+        st.warning(f"⚠️ Not a valid Lottie JSON at {url}")
+    except Exception as e:
+        st.warning(f"⚠️ Unexpected error for {url}: {e}")
+    return None
+
+hello_json = load_lottie_json_safe(hello_lottie)
+processing_json = load_lottie_json_safe(rocket_lottie)
+pop_json = load_lottie_json_safe(pop_lottie)
+balloon_json = load_lottie_json_safe(balloons_lottie)
 
 # ---------- UI CONFIGURATION ----------
 st.set_page_config(layout="wide")
 
 if "files_uploaded" not in st.session_state:
-    st_lottie(hello_json, height=200, key="hello")
+    if hello_json:
+        st_lottie(hello_json, height=200, key="hello")
 
 st.markdown("<h2 style='text-align: center;'>📄 AI Invoice Extractor (ChatGPT)</h2>", unsafe_allow_html=True)
 st.markdown("Upload scanned PDF invoices and extract clean finance data using ChatGPT Vision")
@@ -40,7 +54,7 @@ columns = [
     "Total Payable", "Narration", "GST Input Eligible", "TDS Applicable", "TDS Rate"
 ]
 
-# ---------- Session State Init ----------
+# ---------- Session State ----------
 if "processed_results" not in st.session_state:
     st.session_state["processed_results"] = {}
 if "processing_status" not in st.session_state:
@@ -51,7 +65,7 @@ st.sidebar.header("🔐 AI Config")
 passcode = st.sidebar.text_input("Admin Passcode", type="password")
 admin_unlocked = passcode == "Essenbee"
 
-# ---------- OpenAI API Key ----------
+# ---------- API Key ----------
 openai_api_key = None
 if admin_unlocked:
     st.sidebar.success("🔓 Admin access granted.")
@@ -83,14 +97,14 @@ def is_placeholder_row(text):
     placeholder_keywords = ["Vendor Name", "Invoice No", "Invoice Date", "Expense Ledger"]
     return all(x.lower() in text.lower() for x in placeholder_keywords)
 
-# ---------- PDF to Image ----------
+# ---------- Convert PDF to Image ----------
 def convert_pdf_first_page(pdf_bytes):
     doc = fitz.open(stream=pdf_bytes, filetype="pdf")
     page = doc.load_page(0)
     pix = page.get_pixmap(dpi=300)
     return Image.open(io.BytesIO(pix.tobytes("png")))
 
-# ---------- PDF UPLOAD ----------
+# ---------- Upload PDFs ----------
 uploaded_files = st.file_uploader("📤 Upload scanned invoice PDFs", type=["pdf"], accept_multiple_files=True)
 if uploaded_files:
     st.session_state["files_uploaded"] = True
@@ -171,13 +185,18 @@ if uploaded_files:
             if temp_file_path and os.path.exists(temp_file_path):
                 os.unlink(temp_file_path)
 
-# ---------- DISPLAY RESULTS ----------
+# ---------- Display Results ----------
 results = list(st.session_state["processed_results"].values())
 if results:
-    st_lottie(processing_json, height=180, key="complete")
-    st_lottie(pop_json, height=160, key="popcelebrate")
-    st_lottie(balloon_json, height=120, key="balloons")
+    if processing_json:
+        st_lottie(processing_json, height=180, key="complete")
+    if pop_json:
+        st_lottie(pop_json, height=160, key="popcelebrate")
+    if balloon_json:
+        st_lottie(balloon_json, height=120, key="balloons")
+
     st.markdown("<h3 style='text-align: center;'>🎉 Yippie! All invoices processed with a smile 😊</h3>", unsafe_allow_html=True)
+
     df = pd.DataFrame(results, columns=columns)
     df.insert(0, "S. No", range(1, len(df) + 1))
     st.dataframe(df)
