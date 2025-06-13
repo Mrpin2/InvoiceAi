@@ -11,29 +11,30 @@ from openai import OpenAI
 import tempfile
 import os
 
-# ---------- Load Animation + Assets ----------
-def load_lottie_url(url):
-    r = requests.get(url)
-    if r.status_code != 200:
-        return None
-    return r.json()
+# ---------- Load Assets ----------
+from base64 import b64encode
 
-processing_lottie = "https://assets2.lottiefiles.com/packages/lf20_ygzjzv.json"  # Rocket style
-hello_lottie = "https://assets2.lottiefiles.com/packages/lf20_3vbOcw.json"
-done_lottie = "https://assets1.lottiefiles.com/packages/lf20_myejiggj.json"
-pop_lottie = "https://assets6.lottiefiles.com/packages/lf20_jcikwtux.json"  # Celebration pop
-dance_lottie = "https://assets9.lottiefiles.com/packages/lf20_ydo1amjm.json"  # Dancing robot
+def image_to_html_base64(path, height=200):
+    with open(path, "rb") as f:
+        img_data = b64encode(f.read()).decode()
+    return f'<img src="data:image/png;base64,{img_data}" height="{height}px">'
 
-processing_json = load_lottie_url(processing_lottie)
-done_json = load_lottie_url(done_lottie)
-hello_json = load_lottie_url(hello_lottie)
-pop_json = load_lottie_url(pop_lottie)
-dance_json = load_lottie_url(dance_lottie)
+hello_img = image_to_html_base64("hello_bot.png")  # ID: file-DpCqfcp9qBM38mw7XmFevY
+upload_img = image_to_html_base64("uploading.png")  # ID: file-J5EcbpHtBCmhTXfSNqPDuc
+rocket_lottie = "https://assets2.lottiefiles.com/packages/lf20_ygzjzv.json"
+pop_lottie = "https://assets6.lottiefiles.com/packages/lf20_jcikwtux.json"
+balloons_lottie = "https://assets9.lottiefiles.com/packages/lf20_jtbfg2nb.json"
+
+processing_json = requests.get(rocket_lottie).json()
+pop_json = requests.get(pop_lottie).json()
+balloon_json = requests.get(balloons_lottie).json()
 
 # ---------- UI CONFIGURATION ----------
 st.set_page_config(layout="wide")
-if hello_json and "files_uploaded" not in st.session_state:
-    st_lottie(hello_json, height=200, key="hello")
+
+if "files_uploaded" not in st.session_state:
+    st.markdown(f"<div style='text-align:center;'>{hello_img}</div>", unsafe_allow_html=True)
+
 st.markdown("<h2 style='text-align: center;'>📄 AI Invoice Extractor (ChatGPT)</h2>", unsafe_allow_html=True)
 st.markdown("Upload scanned PDF invoices and extract clean finance data using ChatGPT Vision")
 st.markdown("---")
@@ -99,8 +100,8 @@ def convert_pdf_first_page(pdf_bytes):
 uploaded_files = st.file_uploader("📤 Upload scanned invoice PDFs", type=["pdf"], accept_multiple_files=True)
 if uploaded_files:
     st.session_state["files_uploaded"] = True
-    if processing_json:
-        st_lottie(processing_json, height=180, key="processing")
+    st.markdown(f"<div style='text-align:center;'>{upload_img}<br><b>Processing! Hold On...</b></div>", unsafe_allow_html=True)
+
     total_files = len(uploaded_files)
     completed_count = 0
 
@@ -179,12 +180,9 @@ if uploaded_files:
 # ---------- DISPLAY RESULTS ----------
 results = list(st.session_state["processed_results"].values())
 if results:
-    if done_json:
-        st_lottie(done_json, height=180, key="complete")
-    if pop_json:
-        st_lottie(pop_json, height=160, key="popcelebrate")
-    if dance_json:
-        st_lottie(dance_json, height=260, key="robotdance")
+    st_lottie(processing_json, height=180, key="complete")
+    st_lottie(pop_json, height=160, key="popcelebrate")
+    st_lottie(balloon_json, height=120, key="balloons")
     st.markdown("<h3 style='text-align: center;'>🎉 Yippie! All invoices processed with a smile 😊</h3>", unsafe_allow_html=True)
     df = pd.DataFrame(results, columns=columns)
     df.insert(0, "S. No", range(1, len(df) + 1))
