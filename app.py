@@ -138,7 +138,9 @@ if uploaded_files:
 
                 row = [x.strip() for x in csv_line.split(",")]
                 if len(row) != len(columns):
-                    raise ValueError("Mismatch in extracted field count.")
+                    st.warning(f"Field count mismatch for {file.name}. Got {len(row)}, expected {len(columns)}.")
+                    st.text_area(f"Raw Output ({file.name})", csv_line)
+                    continue
                 results.append(row)
 
             except Exception as e:
