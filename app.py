@@ -16,7 +16,6 @@ import os
 # ---------- Load Animations ----------
 hello_lottie = "https://raw.githubusercontent.com/Mrpin2/InvoiceAi/refs/heads/main/Animation%20-%201749845212531.json"  # waving bot
 completed_lottie = "https://raw.githubusercontent.com/Mrpin2/InvoiceAi/refs/heads/main/Animation%20-%201749845303699.json"  # completion animation
-processing_gif_url = "https://raw.githubusercontent.com/Mrpin2/InvoiceAi/main/processing.gif"
 
 def load_lottie_json_safe(url):
     try:
@@ -28,9 +27,6 @@ def load_lottie_json_safe(url):
 
 hello_json = load_lottie_json_safe(hello_lottie)
 completed_json = load_lottie_json_safe(completed_lottie)
-rocket_json = load_lottie_json_safe(rocket_lottie)
-pop_json = load_lottie_json_safe(pop_lottie)
-balloon_json = load_lottie_json_safe(balloons_lottie)
 
 # ---------- UI HEADER ----------
 if "files_uploaded" not in st.session_state:
@@ -184,12 +180,6 @@ results = list(st.session_state["processed_results"].values())
 if results:
     if completed_json:
         st_lottie(completed_json, height=200, key="done_animation")
-    if rocket_json:
-        st_lottie(rocket_json, height=180, key="rocket")
-    if pop_json:
-        st_lottie(pop_json, height=160, key="popcelebrate")
-    if balloon_json:
-        st_lottie(balloon_json, height=120, key="balloons")
 
     st.markdown("<h3 style='text-align: center;'>🎉 Yippie! All invoices processed with a smile 😊</h3>", unsafe_allow_html=True)
 
@@ -200,7 +190,7 @@ if results:
     csv_data = df.to_csv(index=False).encode("utf-8")
     st.download_button("📥 Download Results as CSV", csv_data, "invoice_results.csv", "text/csv")
 
-    st.markdown(f"---")
+    st.markdown("---")
     if st.session_state.summary_rows:
         st.balloons()
 else:
