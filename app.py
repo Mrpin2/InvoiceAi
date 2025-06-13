@@ -143,19 +143,20 @@ if uploaded_files:
                     results.append([file.name] + ["NOT AN INVOICE"] + ["-"] * (len(columns) - 2))
                     continue
 
-                valid_rows = []
-                for line in csv_line.splitlines():
+                lines = [line for line in csv_line.strip().splitlines() if line.strip()]
+                matched = False
+                for line in lines:
                     row = [x.strip() for x in line.split(",")]
-                    if len(row) == len(columns) - 1:
-                        valid_rows.append([file.name] + row)
+                    if len(row) >= len(columns) - 1:
+                        row = row[:len(columns) - 1]
+                        results.append([file.name] + row)
+                        matched = True
+                        break
 
-                if not valid_rows:
-                    st.warning(f"No valid rows found in {file.name}. Expected {len(columns) - 1} fields.")
+                if not matched:
+                    st.warning(f"Likely not invoice or could not parse {file.name}.")
                     st.text_area(f"Raw Output ({file.name})", csv_line)
                     results.append([file.name] + ["NOT AN INVOICE"] + ["-"] * (len(columns) - 2))
-                    continue
-
-                results.extend(valid_rows)
 
             except Exception as e:
                 st.error(f"❌ Error processing {file.name}: {e}")
