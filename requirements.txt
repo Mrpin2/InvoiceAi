@@ -1,8 +1,7 @@
 streamlit
-streamlit-lottie
-requests
 google-generativeai
-openai
+pydantic
 pymupdf
 pandas
-Pillow
+openpyxl
+streamlit-lottie
