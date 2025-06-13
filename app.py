@@ -6,7 +6,6 @@ import openai
 import io
 import pandas as pd
 import base64
-import json
 import requests
 from streamlit_lottie import st_lottie
 
@@ -17,7 +16,6 @@ def load_lottie_url(url):
         return None
     return r.json()
 
-# Use a free hosted invoice animation from LottieFiles
 lottie_url = "https://assets2.lottiefiles.com/packages/lf20_3vbOcw.json"
 lottie_json = load_lottie_url(lottie_url)
 
@@ -37,26 +35,39 @@ columns = [
 
 # ---------- SIDEBAR AUTH & MODEL SELECT ----------
 st.sidebar.header("🔐 AI Config")
-
 passcode = st.sidebar.text_input("Admin Passcode (optional)", type="password")
 admin_unlocked = passcode == "Essenbee"
 
 model_choice = st.sidebar.radio("Choose AI Model", ["Gemini", "ChatGPT"])
 
+# Initialize model flags and API keys
+gemini_api_key = None
+openai_api_key = None
+ai_model = None
+openai_model = "gpt-4-vision-preview"
+
+# ---------- Handle Gemini ----------
 if model_choice == "Gemini":
     if admin_unlocked:
-        gemini_api_key = st.sidebar.text_input("🔑 Gemini API Key", type="password")
-    else:
-        st.sidebar.caption("Using default embedded Gemini key.")
+        st.sidebar.caption("🔓 Using admin Gemini key")
         gemini_api_key = "AIzaSyA5Jnd7arMlbZ1x_ZpiE-AezrmsaXams7Y"
-    genai.configure(api_key=gemini_api_key)
-    gemini_model_id = "gemini-1.5-flash-latest"
-    ai_model = genai.GenerativeModel(gemini_model_id)
+    else:
+        gemini_api_key = st.sidebar.text_input("🔑 Your Gemini API Key", type="password")
 
+    if gemini_api_key:
+        genai.configure(api_key=gemini_api_key)
+        ai_model = genai.GenerativeModel("gemini-1.5-flash-latest")
+
+# ---------- Handle ChatGPT ----------
 elif model_choice == "ChatGPT":
-    openai_api_key = st.sidebar.text_input("🔑 OpenAI API Key", type="password")
-    openai.api_key = openai_api_key
-    openai_model = "gpt-4-vision-preview"
+    if admin_unlocked:
+        st.sidebar.caption("🔓 Using admin OpenAI key")
+        openai_api_key = "sk-admin-openai-key-here"  # Replace with your admin OpenAI key
+    else:
+        openai_api_key = st.sidebar.text_input("🔑 Your OpenAI API Key", type="password")
+
+    if openai_api_key:
+        openai.api_key = openai_api_key
 
 # ---------- PDF UPLOAD ----------
 uploaded_files = st.file_uploader("📤 Upload scanned invoice PDFs", type=["pdf"], accept_multiple_files=True)
@@ -87,9 +98,10 @@ if uploaded_files:
             Total Payable, Narration, GST Input Eligible, TDS Applicable, TDS Rate.
             """
             try:
-                if model_choice == "Gemini":
+                if model_choice == "Gemini" and gemini_api_key:
                     response = ai_model.generate_content([first_image, prompt])
                     csv_line = response.text.strip()
+
                 elif model_choice == "ChatGPT" and openai_api_key:
                     img_buf = io.BytesIO()
                     first_image.save(img_buf, format="PNG")
@@ -109,7 +121,7 @@ if uploaded_files:
                     )
                     csv_line = response.choices[0].message.content.strip()
                 else:
-                    raise Exception("No API key configured.")
+                    raise Exception("❌ No valid API key provided.")
 
                 row = [x.strip() for x in csv_line.split(",")]
                 if len(row) != len(columns):
