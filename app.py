@@ -14,7 +14,8 @@ import tempfile
 import os
 
 # ---------- Load Animations ----------
-hello_lottie = "https://assets2.lottiefiles.com/packages/lf20_4kx2q32n.json"  # ✅ waving bot
+hello_lottie = "https://raw.githubusercontent.com/Mrpin2/InvoiceAi/refs/heads/main/Animation%20-%201749845303699.json"  # waving bot
+completed_lottie = "https://raw.githubusercontent.com/Mrpin2/InvoiceAi/refs/heads/main/Animation%20-%201749845212531.json"  # completion animation
 rocket_lottie = "https://assets2.lottiefiles.com/packages/lf20_ygzjzv.json"
 pop_lottie = "https://assets10.lottiefiles.com/packages/lf20_qp1q7mct.json"
 balloons_lottie = "https://assets9.lottiefiles.com/packages/lf20_jtbfg2nb.json"
@@ -29,6 +30,7 @@ def load_lottie_json_safe(url):
         return None
 
 hello_json = load_lottie_json_safe(hello_lottie)
+completed_json = load_lottie_json_safe(completed_lottie)
 rocket_json = load_lottie_json_safe(rocket_lottie)
 pop_json = load_lottie_json_safe(pop_lottie)
 balloon_json = load_lottie_json_safe(balloons_lottie)
@@ -183,8 +185,8 @@ if uploaded_files:
 # ---------- Display Results ----------
 results = list(st.session_state["processed_results"].values())
 if results:
-    if hello_json:
-        st_lottie(hello_json, height=180, key="hello_end")
+    if completed_json:
+        st_lottie(completed_json, height=200, key="done_animation")
     if rocket_json:
         st_lottie(rocket_json, height=180, key="rocket")
     if pop_json:
