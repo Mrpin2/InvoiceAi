@@ -155,7 +155,13 @@ if uploaded_files:
                     raise ValueError("Empty response from OpenAI")
 
                 try:
-                    raw_data = json.loads(response_text)
+                    start = response_text.find('{')
+                    end = response_text.rfind('}')
+                    if start != -1 and end != -1:
+                        raw_data = json.loads(response_text[start:end+1])
+                    else:
+                        raise json.JSONDecodeError("Invalid JSON", response_text, 0)
+
                     row = [raw_data.get(field, "") for field in columns]
                     row += ["INR"]
 
@@ -163,13 +169,13 @@ if uploaded_files:
                         row[2] = "MISSING"
 
                     try:
-                        parsed_date = parser.parse(row[6], dayfirst=False)
-                        row[6] = parsed_date.strftime("%d/%m/%Y")
+                        parsed_date = parser.parse(row[5], dayfirst=False)
+                        row[5] = parsed_date.strftime("%d/%m/%Y")
                     except:
-                        row[6] = ""
+                        row[5] = ""
 
-                    if len(row[7].strip()) < 3 or re.match(r"^\d{2}/\d{2}/\d{4}$", row[7]):
-                        row[7] = "MISSING"
+                    if len(row[6].strip()) < 3 or re.match(r"^\d{2}/\d{2}/\d{4}$", row[6]):
+                        row[6] = "MISSING"
 
                     for i in [10, 11, 12, 13, 14]:
                         if not re.match(r"^\d+(\.\d+)?$", str(row[i]).replace(",", "").replace("₹", "")):
@@ -179,21 +185,18 @@ if uploaded_files:
                         row[9] = str(row[9]).replace("%", "")
 
                     narration_text = (
-                        f"Invoice {row[1]} dated {row[6]} was issued by {row[0]} (GSTIN: {row[2]}) "
-                        f"to {row[4]} (GSTIN: {row[4]}), with a total value of ₹{row[14]}. "
-                        f"Taxes applied - CGST: ₹{row[11] or '0.00'}, SGST: ₹{row[12] or '0.00'}, "
-                        f"IGST: ₹{row[13] or '0.00'}. " + (f"Place of supply: {row[5]}. " if row[5] else "") +
-                        f"Expense: {row[7]}. TDS: {row[17]}."
+                        f"Invoice {row[1]} dated {row[5]} was issued by {row[0]} (GSTIN: {row[2]}) "
+                        f"to {row[4]} (GSTIN: {row[4]}), with a total value of ₹{row[10]}. "
+                        f"Taxes applied - CGST: ₹{row[7] or '0.00'}, SGST: ₹{row[8] or '0.00'}, "
+                        f"IGST: ₹{row[9] or '0.00'}. " + (f"Place of supply: {row[17]}. " if row[17] else "") +
+                        f"Expense: {row[18]}. TDS: {row[21]}."
                     )
-                    row[15] = narration_text
+                    row[19] = narration_text
                     result_row = row
 
-                except json.JSONDecodeError:
-                    if "not an invoice" in response_text.lower():
-                        result_row = ["NOT AN INVOICE"] + ["-"] * (len(columns) - 1)
-                    else:
-                        st.text_area("❌ Raw GPT Response", value=response_text, height=200)
-                        raise ValueError("Unable to decode JSON from GPT response.")
+                except Exception as json_error:
+                    result_row = ["NOT AN INVOICE"] + ["-"] * (len(columns) - 1)
+                    st.text_area(f"⚠️ GPT Response Error in {file_name}", value=response_text, height=200)
 
                 st.session_state["processed_results"][file_name] = result_row
                 st.session_state["processing_status"][file_name] = "✅ Done"
