@@ -106,8 +106,6 @@ def format_currency(x):
     except:
         return "₹0.00"
 
-# Note: is_valid_gstin and extract_gstin_from_text functions are kept
-# as they might still be useful, but the main logic will prioritize raw_data.get().
 def is_valid_gstin(gstin):
     """Validates an Indian GSTIN format."""
     if not gstin:
@@ -119,7 +117,6 @@ def is_valid_gstin(gstin):
         return False
         
     # Standard GSTIN pattern: 2-digit state code, 10-char PAN, 1-char entity code, Z, 1-char checksum
-    # The [A-Z0-9]{10} for PAN is flexible, covering both individuals (A-Z) and businesses (A-Z0-9)
     pattern = r"^\d{2}[A-Z0-9]{10}[A-Z]{1}[A-Z0-9]{1}[Z]{1}[A-Z0-9]{1}$"
     return bool(re.match(pattern, cleaned))
 
@@ -137,46 +134,42 @@ def extract_gstin_from_text(text):
 
 def determine_tds_rate(expense_ledger, tds_str="", place_of_supply=""):
     """Determines TDS rate based on expense ledger, TDS string, and place of supply."""
-    # If place of supply is Foreign, TDS is generally not applicable
     if place_of_supply and place_of_supply.lower() == "foreign":
         return 0.0
 
-    # Prioritize specific rate mentioned in TDS string (e.g., "5%")
     if tds_str and isinstance(tds_str, str):
         match = re.search(r'(\d+(\.\d+)?)%', tds_str)
         if match:
             return float(match.group(1))
             
-        # Check for common TDS section mentions within the TDS string
         section_rates = {
-            "194j": 10.0,  # Professional services, Technical Services, Royalty, Fees for Directors
-            "194c": 1.0,   # Contracts (1% for company, 2% for individual/HUF) - using typical 1%
-            "194i": 10.0,  # Rent of plant/machinery/equipment (2%) or land/building/furniture (10%) - using typical 10%
-            "194h": 5.0,   # Commission or brokerage
-            "194q": 0.1    # Purchase of goods
+            "194j": 10.0,
+            "194c": 1.0,
+            "194i": 10.0,
+            "194h": 5.0,
+            "194q": 0.1
         }
         for section, rate in section_rates.items():
             if section in tds_str.lower():
                 return rate
             
-    # Fallback to determining based on expense ledger if no specific TDS info
     expense_ledger = expense_ledger.lower() if expense_ledger else ""
     
     if "professional" in expense_ledger or "consultancy" in expense_ledger or "service" in expense_ledger:
-        return 10.0 # Common for 194J
+        return 10.0
     
     if "contract" in expense_ledger or "work" in expense_ledger:
-        return 1.0 # Common for 194C
+        return 1.0
     
     if "rent" in expense_ledger:
-        return 10.0 # Common for 194I
+        return 10.0
     
-    return 0.0 # Default to 0 if no rule applies
+    return 0.0
 
 def determine_tds_section(expense_ledger, place_of_supply=""):
     """Determines TDS section based on expense ledger and place of supply."""
     if place_of_supply and place_of_supply.lower() == "foreign":
-        return None # No specific section for foreign supply TDS
+        return None
 
     expense_ledger = expense_ledger.lower() if expense_ledger else ""
     if "professional" in expense_ledger or "consultancy" in expense_ledger or "service" in expense_ledger:
@@ -185,29 +178,24 @@ def determine_tds_section(expense_ledger, place_of_supply=""):
         return "194C"
     elif "rent" in expense_ledger:
         return "194I"
-    # Add more rules as needed
     return None
 
 def extract_json_from_response(text):
     """Robustly extracts a JSON object from a string, handling markdown code blocks."""
     try:
-        # Try to find a JSON code block first (most common and reliable for GPT)
         matches = re.findall(r'```json\s*({.*?})\s*```', text, re.DOTALL)
         if matches:
             return json.loads(matches[0])
             
-        # If no code block, try to find the first '{' and last '}' and parse that substring
         start = text.find('{')
         end = text.rfind('}')
         if start != -1 and end != -1:
             return json.loads(text[start:end+1])
             
-        # As a last resort, try parsing the entire text if it's purely JSON
         return json.loads(text)
     except Exception:
         return None
 
-# Enhanced prompt for GPT-4 Vision with detailed extraction guidelines
 main_prompt = (
     "You are an expert at extracting structured data from Indian invoices. "
     "Your task is to extract information into a JSON object with the following keys. "
@@ -525,7 +513,6 @@ if results:
             "Amount Payable (₹)",
             "Place of Supply",
             "Narration"
-            # The original 'TDS' column (tds_str from raw GPT output) is intentionally excluded from display_cols
         ]
         
         # Filter display_cols to only include columns actually present in the DataFrame
@@ -551,7 +538,6 @@ if results:
                     help="Indicates if TDS is applicable (Yes/No/Uncertain)",
                     default="Uncertain"
                 ),
-                # Ensure all currency columns are properly configured if you want specific display types
                 "Taxable Amount (₹)": st.column_config.TextColumn("Taxable Amount (₹)"),
                 "CGST (₹)": st.column_config.TextColumn("CGST (₹)"),
                 "SGST (₹)": st.column_config.TextColumn("SGST (₹)"),
@@ -560,27 +546,22 @@ if results:
                 "TDS Amount (₹)": st.column_config.TextColumn("TDS Amount (₹)"),
                 "Amount Payable (₹)": st.column_config.TextColumn("Amount Payable (₹)")
             },
-            hide_index=True, # Hide the DataFrame index
+            hide_index=True,
             use_container_width=True
         )
 
-        # Prepare DataFrame for download (excluding formatting that might break CSV/Excel)
-        # We use the original numeric columns for download, then format for display only.
+        # Prepare DataFrame for download
         download_df = df.copy()
-        # Drop the formatted currency/percentage columns and keep original numeric ones for download
         for original_col, display_col in currency_cols_mapping.items():
             if display_col in download_df.columns:
                 download_df = download_df.drop(columns=[display_col])
         if 'TDS Rate (%)' in download_df.columns:
             download_df = download_df.drop(columns=['TDS Rate (%)'])
-
-        # Filter download_df to include only relevant (unformatted) columns
-        download_cols_ordered = [col for col in display_cols if col not in currency_cols_mapping.values() and col != 'TDS Rate (%)']
         
-        # Add original numeric columns back for download, if they exist
+        download_cols_ordered = [col for col in display_cols if col not in currency_cols_mapping.values() and col != 'TDS Rate (%)']
         for col_name in ["Taxable Amount", "CGST", "SGST", "IGST", "Total Amount", "TDS Amount", "Amount Payable", "TDS Rate"]:
             if col_name in df.columns and col_name not in download_cols_ordered:
-                 download_cols_ordered.append(col_name) # Append if not already there, to maintain order
+                 download_cols_ordered.append(col_name)
 
         # CSV Download
         csv_data = download_df[download_cols_ordered].to_csv(index=False).encode("utf-8")
@@ -609,7 +590,6 @@ if results:
     st.markdown("### Debugging Information:")
     st.write("#### DataFrame Info (from the display DataFrame):")
     buffer = io.StringIO()
-    # Ensure redirect_stdout is properly imported and used within a context
     with redirect_stdout(buffer):
         df.info(verbose=True, show_counts=True)
     st.text(buffer.getvalue())
@@ -619,9 +599,14 @@ if results:
 
     # Trigger balloons for success feedback
     if 'TDS Applicability' in df.columns and any(df['TDS Applicability'] == "Yes"):
-        st.balloons() # Nice animation for when TDS is applicable
+        st.balloons()
     elif completed_count == total_files and completed_count > 0:
-        st.balloons() # General success animation if all files processed
+        st.balloons()
 
 else:
     st.info("Upload one or more scanned invoices to get started.")
+
+# Add a "Clear All" button at the bottom
+if st.button("🗑️ Clear All Files & Reset", help="Click to clear all uploaded files and extracted data."):
+    st.session_state.clear() # Clear all session state
+    st.experimental_rerun() # Rerun the app to reflect the cleared state
