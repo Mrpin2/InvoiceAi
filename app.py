@@ -234,9 +234,12 @@ if results:
 
     df = pd.DataFrame(sanitized_results, columns=columns)
     df.insert(0, "S. No", range(1, len(df) + 1))
-    st.dataframe(df)
 
-    csv_data = df.to_csv(index=False).encode("utf-8")
+    # Display only columns defined in 'columns' list plus S. No
+    display_columns = ["S. No"] + columns
+    st.dataframe(df[display_columns])
+
+    csv_data = df[display_columns].to_csv(index=False).encode("utf-8")
     st.download_button("📅 Download Results as CSV", csv_data, "invoice_results.csv", "text/csv")
 
     st.markdown("---")
