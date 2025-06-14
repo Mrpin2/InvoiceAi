@@ -375,7 +375,7 @@ st.markdown("""
         background-color: white;
         padding: 25px; /* Increased padding for better look */
         border-radius: 12px;
-        box_shadow: 0 4px 10px rgba(0, 0, 0, 0.08); /* Stronger subtle shadow */
+        box-shadow: 0 4px 10px rgba(0, 0, 0, 0.08); /* Stronger subtle shadow */
         margin-bottom: 25px; /* Space below this card */
         border: 1px solid #e0e0e0; /* Light border */
     }
@@ -384,7 +384,7 @@ st.markdown("""
         background-color: white;
         padding: 20px;
         border-radius: 12px;
-        box_shadow: 0 4px 10px rgba(0, 0, 0, 0.08);
+        box-shadow: 0 4px 10px rgba(0, 0, 0, 0.08);
         margin-bottom: 20px;
         border: 1px solid #e0e0e0;
     }
