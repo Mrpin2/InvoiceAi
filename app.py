@@ -13,6 +13,7 @@ from openai import OpenAI
 import tempfile
 import os
 import locale
+import re
 
 locale.setlocale(locale.LC_ALL, '')
 
@@ -71,17 +72,10 @@ else:
 client = OpenAI(api_key=openai_api_key)
 
 main_prompt = (
-    "Extract all relevant and clear information from the invoice, adhering to Indian standards "
-    "for dates (DD/MM/YYYY or DD-MM-YYYY) and codes (like GSTIN, HSN/SAC). "
-    "Accurately identify the total amount payable. Classify the nature of expense and suggest an "
-    "applicable ledger type (e.g., 'Office Supplies', 'Professional Fees', 'Software Subscription'). "
-    "Determine TDS applicability (e.g., 'Yes - Section 194J', 'No', 'Uncertain'). "
-    "Determine reverse charge GST (RCM) applicability (e.g., 'Yes', 'No', 'Uncertain'). "
-    "Handle missing data appropriately by setting fields to null or an empty string where "
-    "Optional, and raise an issue if critical data is missing for required fields. "
-    "Do not make assumptions or perform calculations beyond what's explicitly stated in the invoice text. "
-    "If a value is clearly zero, represent it as 0.0 for floats. For dates, prefer DD/MM/YYYY.\n"
-    "Return the following fields strictly as a comma-separated line in this order:"
+    "Extract structured information from this invoice with precision. "
+    "Use Indian formats for date (DD/MM/YYYY), ensure correct GST structure and TDS flags. "
+    "Return only values, not assumptions. Use null if unavailable. "
+    "Format response as comma-separated in this exact order: "
     "Vendor Name, Invoice No, GSTIN, HSN/SAC, Buyer Name, Place of Supply, Invoice Date, Expense Ledger, "
     "GST Type, Tax Rate, Basic Amount, CGST, SGST, IGST, Total Payable, Narration, GST Input Eligible, "
     "TDS Applicable, TDS Rate"
@@ -95,7 +89,7 @@ def convert_pdf_first_page(pdf_bytes):
 
 def safe_float(x):
     try:
-        return float(str(x).replace(",", "").strip())
+        return float(str(x).replace(",", "").replace("₹", "").strip())
     except:
         return 0.0
 
@@ -104,6 +98,15 @@ def format_currency(x):
         return f"₹{safe_float(x):,.2f}"
     except:
         return "₹0.00"
+
+def is_valid_gstin(gstin):
+    return bool(re.match(r"^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z]{1}[1-9A-Z]{1}[Z]{1}[0-9A-Z]{1}$", gstin))
+
+def smart_tds_rate(section):
+    if "194j" in section.lower(): return 10
+    if "194c" in section.lower(): return 2
+    if "194h" in section.lower(): return 5
+    return 0
 
 uploaded_files = st.file_uploader("📤 Upload scanned invoice PDFs", type=["pdf"], accept_multiple_files=True)
 
@@ -149,23 +152,25 @@ if uploaded_files:
                     max_tokens=1000
                 )
                 csv_line = response.choices[0].message.content.strip()
-                if csv_line.upper().startswith("NOT AN INVOICE"):
+                if csv_line.upper().startswith("NOT AN INVOICE") or "unable to extract" in csv_line.lower():
                     result_row = ["NOT AN INVOICE"] + ["-"] * (len(columns) - 1)
                 else:
                     row = [x.strip().strip('"') for x in csv_line.split(",")]
-                    result_row = row[:len(columns)] if len(row) >= len(columns) else row + ["-"] * (len(columns) - len(row))
+                    row += ["-"] * (len(columns) - len(row))
+                    row = row[:len(columns)]
 
-                    try:
-                        narration_text = (
-                            f"Invoice {result_row[1]} dated {result_row[6]} was issued by {result_row[0]} (GSTIN: {result_row[2]}) "
-                            f"to {result_row[4]} (GSTIN: {result_row[4]}), with a total value of ₹{result_row[14]}. "
-                            f"Taxes applied - CGST: ₹{result_row[11] or '0.00'}, SGST: ₹{result_row[12] or '0.00'}, "
-                            f"IGST: ₹{result_row[13] or '0.00'}. Place of supply: {result_row[5]}. "
-                            f"Expense: {result_row[7]}. TDS: {result_row[17]}."
-                        )
-                        result_row[15] = narration_text
-                    except Exception:
-                        pass
+                    if not is_valid_gstin(row[2]):
+                        row[2] = "MISSING"
+
+                    narration_text = (
+                        f"Invoice {row[1]} dated {row[6]} was issued by {row[0]} (GSTIN: {row[2]}) "
+                        f"to {row[4]} (GSTIN: {row[4]}), with a total value of ₹{row[14]}. "
+                        f"Taxes applied - CGST: ₹{row[11] or '0.00'}, SGST: ₹{row[12] or '0.00'}, "
+                        f"IGST: ₹{row[13] or '0.00'}. Place of supply: {row[5]}. "
+                        f"Expense: {row[7]}. TDS: {row[17]}."
+                    )
+                    row[15] = narration_text
+                    result_row = row
 
                 st.session_state["processed_results"][file_name] = result_row
                 st.session_state["processing_status"][file_name] = "✅ Done"
@@ -193,7 +198,7 @@ if results:
     df = pd.DataFrame(results, columns=columns)
     df.insert(0, "S. No", range(1, len(df) + 1))
 
-    df["TDS Amount"] = df.apply(lambda row: round(safe_float(row["Basic Amount"]) * 0.10, 2) if "194j" in str(row["TDS Applicable"]).lower() else 0.0, axis=1)
+    df["TDS Amount"] = df.apply(lambda row: round(safe_float(row["Basic Amount"]) * smart_tds_rate(str(row["TDS Applicable"])) / 100, 2), axis=1)
     df["Gross Amount"] = df.apply(lambda row: sum([
         safe_float(row["Basic Amount"]),
         safe_float(row["CGST"]),
