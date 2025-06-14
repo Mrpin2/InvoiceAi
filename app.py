@@ -42,14 +42,18 @@ st.markdown("Upload scanned PDF invoices and extract structured finance data usi
 st.markdown("---")
 
 # Define the fields we want to extract
-fields =
+fields = [
+    "invoice_number", "date", "gstin", "seller_name", "buyer_name", "buyer_gstin",
+    "taxable_amount", "cgst", "sgst", "igst", "place_of_supply", "expense_ledger", "tds",
+    "hsn_sac" # Added HSN/SAC field
+]
 
 if "processed_results" not in st.session_state:
     st.session_state["processed_results"] = {}
 if "processing_status" not in st.session_state:
     st.session_state["processing_status"] = {}
 if "summary_rows" not in st.session_state:
-    st.session_state["summary_rows"] =
+    st.session_state["summary_rows"] = [] # Corrected: should be an empty list
 
 st.sidebar.header("🔐 AI Config")
 passcode = st.sidebar.text_input("Admin Passcode", type="password")
@@ -59,7 +63,7 @@ openai_api_key = None
 if admin_unlocked:
     st.sidebar.success("🔓 Admin access granted.")
     # Assuming OPENAI_API_KEY is correctly set in Streamlit Secrets
-    openai_api_key = st.secrets.get("OPENAI_API_KEY") 
+    openai_api_key = st.secrets.get("OPENAI_API_KEY")
     if not openai_api_key:
         st.sidebar.error("OPENAI_API_KEY missing in Streamlit secrets.")
         st.stop()
@@ -95,14 +99,14 @@ def is_valid_gstin(gstin):
     """Validate GSTIN format with more flexibility"""
     if not gstin:
         return False
-        
+
     # Clean the GSTIN: remove spaces, special characters, convert to uppercase
     cleaned = re.sub(r'[^A-Z0-9]', '', gstin.upper())
-    
+
     # GSTIN must be exactly 15 characters
-    if len(cleaned)!= 15:
+    if len(cleaned) != 15:
         return False
-        
+
     # Validate pattern: 2 digits + 10 alphanumeric + 1 letter + 1 alphanumeric + 1 letter
     pattern = r"^\d{2}[A-Z0-9]{10}[A-Z]{1}[A-Z0-9]{1}[Z]{1}[A-Z0-9]{1}$"
     return bool(re.match(pattern, cleaned))
@@ -112,7 +116,7 @@ def extract_gstin_from_text(text):
     # Look for GSTIN pattern in the text
     matches = re.findall(r'\b\d{2}[A-Z0-9]{10}[A-Z]{1}[A-Z0-9]{1}Z[A-Z0-9]{1}\b', text.upper())
     if matches:
-        return matches # Return the first match
+        return matches[0] # Return the first valid GSTIN found
     return ""
 
 def determine_tds_rate(expense_ledger, tds_str=""):
@@ -123,7 +127,7 @@ def determine_tds_rate(expense_ledger, tds_str=""):
         match = re.search(r'(\d+(\.\d+)?)%', tds_str)
         if match:
             return float(match.group(1))
-            
+
         # Check for TDS sections
         section_rates = {
             "194j": 10.0,  # Professional services
@@ -135,30 +139,30 @@ def determine_tds_rate(expense_ledger, tds_str=""):
         for section, rate in section_rates.items():
             if section in tds_str.lower():
                 return rate
-    
+
     # If no TDS string info, determine by expense ledger
     expense_ledger = expense_ledger.lower() if expense_ledger else ""
-    
+
     # Professional services - 10%
     if "professional" in expense_ledger or "consultancy" in expense_ledger or "service" in expense_ledger:
         return 10.0
-    
+
     # Contract work - 2%
     if "contract" in expense_ledger or "sub-contract" in expense_ledger or "work" in expense_ledger:
         return 2.0
-    
+
     # Commission, brokerage - 5%
     if "commission" in expense_ledger or "brokerage" in expense_ledger:
         return 5.0
-    
+
     # Rent - 10%
     if "rent" in expense_ledger:
         return 10.0
-    
+
     # Advertisement - 1%
     if "advertis" in expense_ledger or "marketing" in expense_ledger:
         return 1.0
-    
+
     # Default to 0 if not applicable
     return 0.0
 
@@ -168,14 +172,15 @@ def extract_json_from_response(text):
         # Look for JSON code block
         matches = re.findall(r'```json\s*({.*?})\s*```', text, re.DOTALL)
         if matches:
-            return json.loads(matches) # Access the first matched group
-            
-        # Look for plain JSON
+            # If multiple matches, take the first one
+            return json.loads(matches[0])
+
+        # Look for plain JSON (first and last curly brace)
         start = text.find('{')
         end = text.rfind('}')
-        if start!= -1 and end!= -1:
+        if start != -1 and end != -1:
             return json.loads(text[start:end+1])
-            
+
         # Try parsing the whole text
         return json.loads(text)
     except Exception:
@@ -188,7 +193,7 @@ main_prompt = (
     "If a key's value is not explicitly present or derivable from the invoice, use `null` for that value. "
     "Keys to extract: invoice_number, date, gstin (seller's GSTIN), seller_name, buyer_name, buyer_gstin, "
     "taxable_amount, cgst, sgst, igst, place_of_supply, expense_ledger, tds, hsn_sac. "
-    
+
     "GUIDELINES FOR EXTRACTION:\n"
     "- 'invoice_number': The unique identifier of the invoice.\n"
     "- 'date': The invoice date in DD/MM/YYYY format.\n"
@@ -203,11 +208,11 @@ main_prompt = (
     "  - Look for labels like 'HSN Code', 'SAC Code', 'HSN/SAC', or just the code itself near item descriptions.\n"
     "  - If multiple HSN/SAC codes are present for different line items, extract the one that appears most prominently, or the first one listed. If only one is present for the whole invoice, use that.\n"
     "  - **If HSN/SAC is NOT found or explicitly stated, the value MUST be `null`. Do NOT guess or infer it.**\n"
-    
+
     "- 'expense_ledger': Classify the nature of expense and suggest a suitable ledger type "
     "  (e.g., 'Office Supplies', 'Professional Fees', 'Software Subscription', 'Rent').\n"
     "- 'tds': Determine TDS applicability. State 'Yes - Section [X]' if applicable with a section, 'No' if clearly not, or 'Uncertain' if unclear.\n"
-    
+
     "Return 'NOT AN INVOICE' if the document is clearly not an invoice.\n"
     "Ensure the JSON output is clean and directly parsable."
 )
@@ -236,7 +241,7 @@ if uploaded_files:
 
             with open(temp_file_path, "rb") as f:
                 pdf_data = f.read()
-                
+
             first_image = convert_pdf_first_page(pdf_data)
 
             with st.spinner("🧠 Extracting data using GPT-4 Vision..."):
@@ -245,7 +250,13 @@ if uploaded_files:
                 img_buf.seek(0)
                 base64_image = base64.b64encode(img_buf.read()).decode()
 
-                chat_prompt =}
+                # Fix: Correctly define chat_prompt as a list of dictionaries
+                chat_prompt = [
+                    {"role": "system", "content": "You are a finance assistant specializing in Indian invoices. Pay special attention to GSTIN and HSN/SAC extraction."},
+                    {"role": "user", "content": [
+                        {"type": "text", "text": main_prompt},
+                        {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{base64_image}"}}
+                    ]}
                 ]
 
                 response = client.chat.completions.create(
@@ -254,11 +265,12 @@ if uploaded_files:
                     max_tokens=2000
                 )
 
-                response_text = response.choices.message.content.strip() # Corrected: added 
-                
+                # Fix: Correct way to access message content
+                response_text = response.choices[0].message.content.strip()
+
                 # Try to extract JSON from the response
                 raw_data = extract_json_from_response(response_text)
-                
+
                 if raw_data is None:
                     if "not an invoice" in response_text.lower():
                         result_row = {
@@ -303,28 +315,28 @@ if uploaded_files:
                     place_of_supply = raw_data.get("place_of_supply", "")
                     expense_ledger = raw_data.get("expense_ledger", "")
                     tds_str = raw_data.get("tds", "")
-                    
+
                     # Calculate derived fields
                     total_amount = taxable_amount + cgst + sgst + igst
                     tds_rate = determine_tds_rate(expense_ledger, tds_str)
                     tds_amount = round(taxable_amount * tds_rate / 100, 2)
                     amount_payable = total_amount - tds_amount
-                    
+
                     # Enhanced GSTIN handling
                     if seller_gstin:
                         seller_gstin = re.sub(r'[^A-Z0-9]', '', seller_gstin.upper())
                     if not is_valid_gstin(seller_gstin):
-                        fallback_gstin = extract_gstin_from_text(seller_name)
+                        fallback_gstin = extract_gstin_from_text(seller_name + " " + seller_gstin) # Include original seller_gstin in text for fallback
                         if fallback_gstin:
                             seller_gstin = fallback_gstin
-                    
+
                     # Parse and format date
                     try:
                         parsed_date = parser.parse(str(date), dayfirst=True)
                         date = parsed_date.strftime("%d/%m/%Y")
                     except:
                         date = "" # Keep date as blank if parsing fails
-                    
+
                     # Create narration text
                     buyer_gstin_display = buyer_gstin or "N/A"
                     narration = (
@@ -338,14 +350,14 @@ if uploaded_files:
                         f"TDS: {tds_str or 'N/A'} @ {tds_rate}% (₹{tds_amount:,.2f}). "
                         f"Amount Payable: ₹{amount_payable:,.2f}."
                     )
-                    
+
                     result_row = {
                         "File Name": file_name,
                         "Invoice Number": invoice_number,
                         "Date": date,
                         "Seller Name": seller_name,
                         "Seller GSTIN": seller_gstin,
-                        "HSN/SAC": hsn_sac,
+                        "HSN/SAC": hsn_sac, # This ensures the key is always here
                         "Buyer Name": buyer_name,
                         "Buyer GSTIN": buyer_gstin,
                         "Taxable Amount": taxable_amount,
@@ -374,7 +386,7 @@ if uploaded_files:
                 "Date": "",
                 "Seller Name": "",
                 "Seller GSTIN": "",
-                "HSN/SAC": "", 
+                "HSN/SAC": "",
                 "Buyer Name": "",
                 "Buyer GSTIN": "",
                 "Taxable Amount": 0.0,
@@ -414,20 +426,25 @@ if results:
     # Create DataFrame
     try:
         df = pd.DataFrame(results)
-        
+
         # Format currency columns
-        currency_cols =
+        currency_cols = ["Taxable Amount", "CGST", "SGST", "IGST", "Total Amount", "TDS Amount", "Amount Payable"]
         for col in currency_cols:
             df[f"{col} (₹)"] = df[col].apply(format_currency)
-        
+
         # Format TDS Rate as percentage
-        df = df.apply(lambda x: f"{x}%") # Corrected: apply to specific column
-        
+        df["TDS Rate (%)"] = df["TDS Rate"].apply(lambda x: f"{x}%")
+
         # Reorder columns for better display (HSN/SAC added here)
-        display_cols =
-        
+        display_cols = [
+            "File Name", "Invoice Number", "Date", "Seller Name", "Seller GSTIN", "HSN/SAC",
+            "Buyer Name", "Buyer GSTIN", "Taxable Amount (₹)",
+            "CGST (₹)", "SGST (₹)", "IGST (₹)", "Total Amount (₹)", "TDS Rate (%)",
+            "TDS Amount (₹)", "Amount Payable (₹)", "Place of Supply",
+            "Expense Ledger", "TDS", "Narration"
+        ]
+
         # Ensure all display_cols are present in df before selecting
-        # This handles cases where some columns might be missing due to errors
         actual_display_cols = [col for col in display_cols if col in df.columns]
 
         st.dataframe(
@@ -445,7 +462,7 @@ if results:
 
         # Create download dataframe without status columns
         download_df = df[actual_display_cols].copy()
-        
+
         # CSV Download
         csv_data = download_df.to_csv(index=False).encode("utf-8")
         st.download_button("📥 Download Results as CSV", csv_data, "invoice_results.csv", "text/csv")
@@ -463,7 +480,7 @@ if results:
             )
         except Exception as e:
             st.error(f"Failed to create Excel file: {str(e)}")
-            
+
     except Exception as e:
         st.error(f"Error creating results table: {str(e)}")
         st.write("Raw results data:")
