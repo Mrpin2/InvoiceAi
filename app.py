@@ -58,6 +58,11 @@ if "summary_rows" not in st.session_state:
 if "process_triggered" not in st.session_state:
     st.session_state["process_triggered"] = False # New state for explicit processing
 
+# --- IMPORTANT: Manage uploaded_files in session_state ---
+# This ensures that when session_state.clear() is called, uploaded_files also gets reset
+if "uploaded_files" not in st.session_state:
+    st.session_state["uploaded_files"] = []
+
 st.sidebar.header("🔐 AI Config")
 passcode = st.sidebar.text_input("Admin Passcode", type="password")
 admin_unlocked = passcode == "Rajeev"
@@ -241,14 +246,30 @@ main_prompt = (
     "Ensure the JSON output is clean and directly parsable."
 )
 
-uploaded_files = st.file_uploader("📤 Upload scanned invoice PDFs", type=["pdf"], accept_multiple_files=True)
+# Pass a key to the file uploader. When the key changes (e.g., after clear), it resets.
+# We'll use a session state variable for the key.
+if "file_uploader_key" not in st.session_state:
+    st.session_state["file_uploader_key"] = 0
+
+uploaded_files = st.file_uploader(
+    "📤 Upload scanned invoice PDFs",
+    type=["pdf"],
+    accept_multiple_files=True,
+    key=f"file_uploader_{st.session_state.file_uploader_key}" # Unique key for reset
+)
+
+# Store uploaded files in session state to persist across reruns and allow clearing
+if uploaded_files:
+    st.session_state["uploaded_files"] = uploaded_files
+    st.session_state["files_uploaded"] = True # Indicate files are present
+else:
+    # If file uploader is empty, ensure session state reflects that
+    st.session_state["uploaded_files"] = []
+    st.session_state["files_uploaded"] = False
 
 # Conditional display of buttons after file upload
-if uploaded_files:
-    st.session_state["files_uploaded"] = True
-    
+if st.session_state["files_uploaded"]:
     # Create columns: one for "Process Invoices", a large empty one, and one for "Clear All"
-    # Adjust the middle ratio (e.g., 0.1, 0.5, 1, 2) to control the spacing
     col_process, col_spacer, col_clear = st.columns([1, 4, 1]) # Adjust 4 for more or less space
     
     with col_process:
@@ -259,18 +280,21 @@ if uploaded_files:
     with col_clear:
         if st.button("🗑️ Clear All Files & Reset", help="Click to clear all uploaded files and extracted data."):
             st.session_state.clear() # Clear all session state
+            # Increment the file_uploader_key to force the file_uploader to reset on rerun
+            st.session_state["file_uploader_key"] += 1 
             st.rerun() # Rerun the app to reflect the cleared state
 
 # Only proceed with processing if files are uploaded AND the "Process Invoices" button was clicked
-if uploaded_files and st.session_state["process_triggered"]:
-    total_files = len(uploaded_files)
+# Use st.session_state["uploaded_files"] for processing, as it's the consistent source
+if st.session_state["uploaded_files"] and st.session_state["process_triggered"]:
+    total_files = len(st.session_state["uploaded_files"])
     # Use a progress bar to show overall completion
     progress_text = st.empty()
     progress_bar = st.progress(0)
     
     completed_count = 0
 
-    for idx, file in enumerate(uploaded_files):
+    for idx, file in enumerate(st.session_state["uploaded_files"]): # Iterate through session state files
         file_name = file.name
         progress_text.text(f"Processing file: {file_name} ({idx+1}/{total_files})")
         progress_bar.progress((idx + 1) / total_files)
@@ -606,17 +630,6 @@ if results and st.session_state["process_triggered"]: # Only show results if pro
         st.write("Raw results data for debugging:")
         st.json(results)
 
-    # Removed debugging information as requested
-    # st.markdown("---")
-    # st.markdown("### Debugging Information:")
-    # st.write("#### DataFrame Info (from the display DataFrame):")
-    # buffer = io.StringIO()
-    # with redirect_stdout(buffer):
-    #     df.info(verbose=True, show_counts=True)
-    # st.text(buffer.getvalue())
-    # st.write("#### Null Counts per Column (from the display DataFrame):")
-    # st.dataframe(df.isnull().sum().to_frame(name='Null Count'), use_container_width=True)
-
     # Trigger balloons for success feedback
     if 'TDS Applicability' in df.columns and any(df['TDS Applicability'] == "Yes"):
         st.balloons()
@@ -624,7 +637,7 @@ if results and st.session_state["process_triggered"]: # Only show results if pro
         st.balloons()
 
 else:
-    if uploaded_files and not st.session_state["process_triggered"]:
+    if st.session_state["uploaded_files"] and not st.session_state["process_triggered"]:
         st.info("Files uploaded. Click 'Process Invoices' to start extraction.")
-    elif not uploaded_files:
+    elif not st.session_state["uploaded_files"]:
         st.info("Upload one or more scanned invoices to get started.")
