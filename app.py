@@ -42,18 +42,14 @@ st.markdown("Upload scanned PDF invoices and extract structured finance data usi
 st.markdown("---")
 
 # Define the fields we want to extract
-fields = [
-    "invoice_number", "date", "gstin", "seller_name", "buyer_name", "buyer_gstin",
-    "taxable_amount", "cgst", "sgst", "igst", "place_of_supply", "expense_ledger", "tds",
-    "hsn_sac" # Added HSN/SAC field
-]
+fields =
 
 if "processed_results" not in st.session_state:
     st.session_state["processed_results"] = {}
 if "processing_status" not in st.session_state:
     st.session_state["processing_status"] = {}
 if "summary_rows" not in st.session_state:
-    st.session_state["summary_rows"] = []
+    st.session_state["summary_rows"] =
 
 st.sidebar.header("🔐 AI Config")
 passcode = st.sidebar.text_input("Admin Passcode", type="password")
@@ -104,7 +100,7 @@ def is_valid_gstin(gstin):
     cleaned = re.sub(r'[^A-Z0-9]', '', gstin.upper())
     
     # GSTIN must be exactly 15 characters
-    if len(cleaned) != 15:
+    if len(cleaned)!= 15:
         return False
         
     # Validate pattern: 2 digits + 10 alphanumeric + 1 letter + 1 alphanumeric + 1 letter
@@ -116,7 +112,7 @@ def extract_gstin_from_text(text):
     # Look for GSTIN pattern in the text
     matches = re.findall(r'\b\d{2}[A-Z0-9]{10}[A-Z]{1}[A-Z0-9]{1}Z[A-Z0-9]{1}\b', text.upper())
     if matches:
-        return matches[0]
+        return matches
     return ""
 
 def determine_tds_rate(expense_ledger, tds_str=""):
@@ -127,7 +123,7 @@ def determine_tds_rate(expense_ledger, tds_str=""):
         match = re.search(r'(\d+(\.\d+)?)%', tds_str)
         if match:
             return float(match.group(1))
-        
+            
         # Check for TDS sections
         section_rates = {
             "194j": 10.0,  # Professional services
@@ -172,14 +168,14 @@ def extract_json_from_response(text):
         # Look for JSON code block
         matches = re.findall(r'```json\s*({.*?})\s*```', text, re.DOTALL)
         if matches:
-            return json.loads(matches[0])
-        
+            return json.loads(matches)
+            
         # Look for plain JSON
         start = text.find('{')
         end = text.rfind('}')
-        if start != -1 and end != -1:
+        if start!= -1 and end!= -1:
             return json.loads(text[start:end+1])
-        
+            
         # Try parsing the whole text
         return json.loads(text)
     except Exception:
@@ -249,12 +245,7 @@ if uploaded_files:
                 img_buf.seek(0)
                 base64_image = base64.b64encode(img_buf.read()).decode()
 
-                chat_prompt = [
-                    {"role": "system", "content": "You are a finance assistant specializing in Indian invoices. Pay special attention to GSTIN and HSN/SAC extraction."},
-                    {"role": "user", "content": [
-                        {"type": "text", "text": main_prompt},
-                        {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{base64_image}"}}
-                    ]}
+                chat_prompt =}
                 ]
 
                 response = client.chat.completions.create(
@@ -263,7 +254,7 @@ if uploaded_files:
                     max_tokens=2000
                 )
 
-                response_text = response.choices[0].message.content.strip()
+                response_text = response.choices.message.content.strip()
                 
                 # Try to extract JSON from the response
                 raw_data = extract_json_from_response(response_text)
@@ -425,26 +416,35 @@ if results:
         df = pd.DataFrame(results)
         
         # Format currency columns
-        currency_cols = ["Taxable Amount", "CGST", "SGST", "IGST", "Total Amount", "TDS Amount", "Amount Payable"]
+        currency_cols =
         for col in currency_cols:
             df[f"{col} (₹)"] = df[col].apply(format_currency)
         
         # Format TDS Rate as percentage
-        df["TDS Rate (%)"] = df["TDS Rate"].apply(lambda x: f"{x}%")
+        df = df.apply(lambda x: f"{x}%")
         
-        # Reorder columns for better display (removed GSTIN status)
-        display_cols = [
-            "File Name", "Invoice Number", "Date", "Seller Name", "Seller GSTIN", "HSN/SAC", # HSN/SAC added here
-            "Buyer Name", "Buyer GSTIN", "Taxable Amount (₹)",
-            "CGST (₹)", "SGST (₹)", "IGST (₹)", "Total Amount (₹)", "TDS Rate (%)",
-            "TDS Amount (₹)", "Amount Payable (₹)", "Place of Supply",
-            "Expense Ledger", "TDS", "Narration"
-        ]
+        # Reorder columns for better display (HSN/SAC added here)
+        display_cols =
         
-        st.dataframe(df[display_cols])
+        # Ensure all display_cols are present in df before selecting
+        # This handles cases where some columns might be missing due to errors
+        actual_display_cols = [col for col in display_cols if col in df.columns]
+
+        st.dataframe(
+            df[actual_display_cols],
+            column_order=actual_display_cols, # Explicitly set column order
+            column_config={
+                "HSN/SAC": st.column_config.TextColumn(
+                    "HSN/SAC", # Display name for the column header
+                    help="Harmonized System of Nomenclature / Service Accounting Code",
+                    default="N/A" # Display "N/A" if the value is null/empty
+                )
+            },
+            use_container_width=True
+        )
 
         # Create download dataframe without status columns
-        download_df = df[display_cols].copy()
+        download_df = df[actual_display_cols].copy()
         
         # CSV Download
         csv_data = download_df.to_csv(index=False).encode("utf-8")
@@ -470,6 +470,18 @@ if results:
         st.json(results)
 
     st.markdown("---")
+    st.markdown("### Debugging Information:")
+    st.write("#### DataFrame Info:")
+    import io
+    from contextlib import redirect_stdout
+    buffer = io.StringIO()
+    with redirect_stdout(buffer):
+        df.info(verbose=True, show_counts=True) # verbose=True and show_counts=True ensures full detail
+    st.text(buffer.getvalue())
+
+    st.write("#### Null Counts per Column:")
+    st.dataframe(df.isnull().sum().to_frame(name='Null Count')) # Display null counts
+
     if st.session_state.summary_rows:
         st.balloons()
 else:
