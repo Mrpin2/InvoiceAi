@@ -1,8 +1,8 @@
 import streamlit as st
 st.set_page_config(layout="wide")
 
-from PIL import Image, ImageEnhance, ImageFilter
-import fitz # PyMuPDF
+from PIL import Image
+import fitz
 import io
 import pandas as pd
 import base64
@@ -17,26 +17,8 @@ import re
 from dateutil import parser
 import json
 
-# --- Placeholders for dynamic content, including the file uploader ---
-# This placeholder will be used to completely redraw the file uploader
-# Define it early to ensure it's always available
-file_uploader_placeholder = st.empty() # MOVED THIS LINE HERE
-
-# Import pytesseract
-try:
-    import pytesseract
-    # When deploying to Streamlit Community Cloud, Tesseract is installed via packages.txt
-    # and should be in the system's PATH. Therefore, we generally do NOT need to set
-    # pytesseract.pytesseract.tesseract_cmd explicitly here.
-    # If running locally and Tesseract isn't in your PATH, you might uncomment this:
-    # pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe' # Windows example
-    # pytesseract.pytesseract.tesseract_cmd = r'/usr/local/bin/tesseract' # macOS/Linux example
-except ImportError:
-    st.error("Pytesseract not found. Please install it using `pip install pytesseract` "
-             "and ensure Tesseract OCR is installed on your system. "
-             "For Streamlit Community Cloud, add `tesseract-ocr` to a `packages.txt` file.")
-    st.stop()
-
+# Import Gemini API client
+import google.generativeai as genai 
 
 locale.setlocale(locale.LC_ALL, '')
 
@@ -64,8 +46,8 @@ if not st.session_state["files_uploaded"]:
     if hello_json:
         st_lottie(hello_json, height=200, key="hello")
 
-st.markdown("<h2 style='text-align: center;'>📄 AI Invoice Extractor (OpenAI)</h2>", unsafe_allow_html=True)
-st.markdown("Upload scanned PDF invoices and extract structured finance data using GPT-4 Vision")
+st.markdown("<h2 style='text-align: center;'>📄 AI Invoice Extractor (OpenAI + Gemini)</h2>", unsafe_allow_html=True)
+st.markdown("Upload scanned PDF invoices and extract structured finance data using GPT-4 Vision and Gemini for GSTIN validation.")
 st.markdown("---")
 
 # Initialize session states for storing results and processing status
@@ -82,6 +64,9 @@ if "process_triggered" not in st.session_state:
 if "file_uploader_key" not in st.session_state:
     st.session_state["file_uploader_key"] = 0
 
+# --- Placeholders for dynamic content, including the file uploader ---
+# This placeholder will be used to completely redraw the file uploader
+file_uploader_placeholder = st.empty()
 
 # --- Admin/API Key Config ---
 st.sidebar.header("🔐 AI Config")
@@ -89,25 +74,43 @@ passcode = st.sidebar.text_input("Admin Passcode", type="password")
 admin_unlocked = passcode == "Rajeev"
 
 openai_api_key = None
+gemini_api_key = None # New variable for Gemini API key
+
 if admin_unlocked:
     st.sidebar.success("🔓 Admin access granted.")
-    # Attempt to get from Streamlit secrets first, then allow manual input
     openai_api_key = st.secrets.get("OPENAI_API_KEY")
-    if not openai_api_key:
-        st.sidebar.warning("OPENAI_API_KEY not found in Streamlit secrets. Please enter it manually.")
-        openai_api_key = st.sidebar.text_input("🔑 Enter your OpenAI API Key", type="password", key="admin_api_key_manual")
-else:
-    openai_api_key = st.sidebar.text_input("🔑 Enter your OpenAI API Key", type="password", key="user_api_key_manual")
+    gemini_api_key = st.secrets.get("GEMINI_API_KEY") # Get Gemini key from secrets
 
-if not openai_api_key:
-    st.sidebar.warning("Please enter a valid API key to continue.")
-    st.stop()
+    if not openai_api_key:
+        st.sidebar.error("OPENAI_API_KEY missing in Streamlit secrets.")
+        st.stop()
+    if not gemini_api_key:
+        st.sidebar.error("GEMINI_API_KEY missing in Streamlit secrets.")
+        st.stop()
+else:
+    openai_api_key = st.sidebar.text_input("🔑 Enter your OpenAI API Key", type="password")
+    gemini_api_key = st.sidebar.text_input("🔑 Enter your Gemini API Key", type="password") # User input for Gemini key
+
+    if not openai_api_key:
+        st.sidebar.warning("Please enter a valid OpenAI API key to continue.")
+        st.stop()
+    if not gemini_api_key:
+        st.sidebar.warning("Please enter a valid Gemini API key to continue.")
+        st.stop()
 
 try:
     client = OpenAI(api_key=openai_api_key)
 except Exception as e:
     st.error(f"Failed to initialize OpenAI client. Check your API key: {e}")
     st.stop()
+
+try:
+    genai.configure(api_key=gemini_api_key)
+    gemini_model = genai.GenerativeModel('gemini-pro-vision' if 'vision' in genai.GenerativeModel.list_models()[0].name else 'gemini-pro') # Use vision model if available
+except Exception as e:
+    st.error(f"Failed to initialize Gemini client. Check your API key: {e}")
+    st.stop()
+
 
 # --- Functions remain the same ---
 def convert_pdf_first_page(pdf_bytes):
@@ -116,24 +119,6 @@ def convert_pdf_first_page(pdf_bytes):
     pix = page.get_pixmap(dpi=300)
     img_bytes = pix.tobytes("png")
     return Image.open(io.BytesIO(img_bytes))
-
-def preprocess_image(image: Image.Image) -> Image.Image:
-    """Applies contrast/sharpness boosts and a median filter to an image."""
-    # Convert to grayscale for better OCR performance on text
-    image = image.convert("L")
-    
-    # Apply contrast enhancement
-    enhancer = ImageEnhance.Contrast(image)
-    image = enhancer.enhance(1.5)  # Increase contrast by 50%
-
-    # Apply sharpness enhancement
-    enhancer = ImageEnhance.Sharpness(image)
-    image = enhancer.enhance(1.5) # Increase sharpness by 50%
-
-    # Apply median filter to reduce noise (good for scanned documents)
-    image = image.filter(ImageFilter.MedianFilter(size=3))
-    
-    return image
 
 def safe_float(x):
     try:
@@ -159,14 +144,49 @@ def is_valid_gstin(gstin):
     pattern = r"^\d{2}[A-Z0-9]{10}[A-Z]{1}[A-Z0-9]{1}[Z]{1}[A-Z0-9]{1}$"
     return bool(re.match(pattern, cleaned))
 
-def extract_gstin_from_text(text):
-    if not text:
-        return ""
-    matches = re.findall(r'\b(\d{2}[A-Z0-9]{10}[A-Z]{1}[A-Z0-9]{1}Z[A-Z0-9]{1})\b', text.upper())
-    for match in matches:
-        if is_valid_gstin(match):
-            return match
-    return ""
+# This function will now use Gemini API
+def extract_gstin_with_gemini(image_data, text_data=""):
+    """
+    Extracts and validates GSTINs using the Gemini API.
+    Prioritizes extraction from image if available, falls back to text.
+    """
+    prompt = (
+        "Extract all potential GSTINs from the provided image/text. "
+        "A valid Indian GSTIN is a 15-character alphanumeric string. "
+        "Format the output as a JSON list of strings, e.g., ['GSTIN1', 'GSTIN2']. "
+        "If no valid GSTINs are found, return an empty list []."
+    )
+    
+    parts = [{"mime_type": "image/png", "data": image_data}]
+    if text_data:
+        # Optionally, you can add text as another part if you want Gemini to consider it.
+        # This might be useful if the image quality is poor but text OCR is good.
+        # For simplicity, we'll focus on image, but you could add:
+        # parts.append({"mime_type": "text/plain", "data": text_data})
+        pass
+
+    try:
+        response = gemini_model.generate_content([prompt, Image.open(io.BytesIO(image_data))])
+        response_text = response.text.strip()
+        
+        # Attempt to parse as JSON list
+        try:
+            gstins = json.loads(response_text)
+            if isinstance(gstins, list):
+                # Filter for valid GSTINs
+                return [g for g in gstins if is_valid_gstin(g)]
+        except json.JSONDecodeError:
+            # If not a direct JSON list, try to find patterns in the raw text
+            pass
+
+        # Fallback to regex if Gemini doesn't return a perfect JSON list
+        matches = re.findall(r'\b(\d{2}[A-Z0-9]{10}[A-Z]{1}[A-Z0-9]{1}Z[A-Z0-9]{1})\b', response_text.upper())
+        valid_gstins = [match for match in matches if is_valid_gstin(match)]
+        return valid_gstins
+
+    except Exception as e:
+        st.warning(f"Gemini API call failed for GSTIN extraction: {e}")
+        return []
 
 def determine_tds_rate(expense_ledger, tds_str="", place_of_supply=""):
     if place_of_supply and place_of_supply.lower() == "foreign":
@@ -209,7 +229,7 @@ def extract_json_from_response(text):
         end = text.rfind('}')
         if start != -1 and end != -1:
             return json.loads(text[start:end+1])
-        return json.loads(text)
+        return json.loads(text) # In case the JSON is the entire response
     except Exception:
         return None
 
@@ -331,21 +351,23 @@ if st.session_state["uploaded_files"] and st.session_state["process_triggered"]:
             with open(temp_file_path, "rb") as f:
                 pdf_data = f.read()
                 
-            first_image_original = convert_pdf_first_page(pdf_data)
-            first_image_preprocessed = preprocess_image(first_image_original)
+            first_image = convert_pdf_first_page(pdf_data)
+
+            # Convert PIL Image to bytes for Gemini
+            img_buf = io.BytesIO()
+            first_image.save(img_buf, format="PNG")
+            img_bytes = img_buf.getvalue() # Get bytes for Gemini
+
 
             with st.spinner(f"🧠 Extracting data from {file_name} using GPT-4 Vision..."):
-                img_buf_gpt = io.BytesIO()
-                first_image_preprocessed.save(img_buf_gpt, format="PNG") # Send preprocessed image to GPT
-                img_buf_gpt.seek(0)
-                base64_image_gpt = base64.b64encode(img_buf_gpt.read()).decode()
+                base64_image = base64.b64encode(img_bytes).decode() # Use img_bytes for OpenAI
 
                 chat_prompt = [
                     {
                         "role": "user",
                         "content": [
                             {"type": "text", "text": main_prompt},
-                            {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{base64_image_gpt}"}}
+                            {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{base64_image}"}}
                         ]
                     }
                 ]
@@ -380,32 +402,10 @@ if st.session_state["uploaded_files"] and st.session_state["process_triggered"]:
                     invoice_number = raw_data.get("invoice_number", "")
                     date = raw_data.get("date", "")
                     seller_name = raw_data.get("seller_name", "")
-                    seller_gstin = raw_data.get("gstin", "")
-                    buyer_name = raw_data.get("buyer_name", "")
-                    buyer_gstin = raw_data.get("buyer_gstin", "")
-
-                    # --- GSTIN Fallback Logic ---
-                    # Only attempt OCR if GPT missed *both* GSTINs or provided invalid ones.
-                    if (not is_valid_gstin(seller_gstin)) or (not is_valid_gstin(buyer_gstin)):
-                        with st.spinner(f"🔍 GPT missed GSTINs for {file_name}. Attempting OCR fallback with Pytesseract..."):
-                            # Perform OCR on the preprocessed image
-                            ocr_text = pytesseract.image_to_string(first_image_preprocessed, lang='eng')
-                            
-                            # Try to extract GSTINs from OCR text
-                            if not is_valid_gstin(seller_gstin):
-                                extracted_seller_gstin_ocr = extract_gstin_from_text(ocr_text)
-                                if is_valid_gstin(extracted_seller_gstin_ocr):
-                                    seller_gstin = extracted_seller_gstin_ocr
-                                    st.info(f"✅ Seller GSTIN found via OCR fallback for {file_name}.")
-                            
-                            if not is_valid_gstin(buyer_gstin):
-                                extracted_buyer_gstin_ocr = extract_gstin_from_text(ocr_text)
-                                if is_valid_gstin(extracted_buyer_gstin_ocr):
-                                    buyer_gstin = extracted_buyer_gstin_ocr
-                                    st.info(f"✅ Buyer GSTIN found via OCR fallback for {file_name}.")
-                    # --- End GSTIN Fallback Logic ---
-
+                    seller_gstin_openai = raw_data.get("gstin", "") # Store OpenAI's GSTIN separately
                     hsn_sac = raw_data.get("hsn_sac", "")
+                    buyer_name = raw_data.get("buyer_name", "")
+                    buyer_gstin_openai = raw_data.get("buyer_gstin", "") # Store OpenAI's GSTIN separately
                     expense_ledger = raw_data.get("expense_ledger", "")
                     taxable_amount = safe_float(raw_data.get("taxable_amount", 0.0))
                     cgst = safe_float(raw_data.get("cgst", 0.0))
@@ -413,6 +413,37 @@ if st.session_state["uploaded_files"] and st.session_state["process_triggered"]:
                     igst = safe_float(raw_data.get("igst", 0.0))
                     place_of_supply = raw_data.get("place_of_supply", "")
                     tds_str = raw_data.get("tds", "")
+
+                    # --- Gemini API for GSTIN validation/extraction ---
+                    st.info(f"🔍 Validating GSTINs for {file_name} using Gemini...")
+                    extracted_gstins_gemini = extract_gstin_with_gemini(img_bytes)
+                    
+                    # Logic to choose the best GSTINs or combine them
+                    seller_gstin = ""
+                    buyer_gstin = ""
+
+                    # Prioritize Gemini's findings if they are valid
+                    if extracted_gstins_gemini:
+                        # Simple heuristic: assume the first valid GSTIN is seller, second is buyer
+                        # You might need more sophisticated logic here based on your prompt to Gemini
+                        if len(extracted_gstins_gemini) >= 1 and is_valid_gstin(extracted_gstins_gemini[0]):
+                            seller_gstin = extracted_gstins_gemini[0]
+                        if len(extracted_gstins_gemini) >= 2 and is_valid_gstin(extracted_gstins_gemini[1]):
+                            buyer_gstin = extracted_gstins_gemini[1]
+                        elif seller_gstin and is_valid_gstin(seller_gstin_openai) and seller_gstin_openai != seller_gstin and len(extracted_gstins_gemini) == 1:
+                            # If Gemini only found one, and OpenAI found another, use OpenAI's as buyer if valid
+                             buyer_gstin = seller_gstin_openai
+                        elif buyer_gstin_openai and not buyer_gstin and is_valid_gstin(buyer_gstin_openai):
+                            # If Gemini didn't find a buyer GSTIN, use OpenAI's if it's valid
+                            buyer_gstin = buyer_gstin_openai
+                    
+                    # If Gemini didn't find any or not enough, fallback to OpenAI's initial extraction
+                    if not seller_gstin and is_valid_gstin(seller_gstin_openai):
+                        seller_gstin = seller_gstin_openai
+                    if not buyer_gstin and is_valid_gstin(buyer_gstin_openai):
+                        buyer_gstin = buyer_gstin_openai
+                    # --- End of Gemini API for GSTIN validation/extraction ---
+
 
                     total_amount = taxable_amount + cgst + sgst + igst
                     tds_rate = determine_tds_rate(expense_ledger, tds_str, place_of_supply)
@@ -452,10 +483,10 @@ if st.session_state["uploaded_files"] and st.session_state["process_triggered"]:
                         "Invoice Number": invoice_number,
                         "Date": date,
                         "Seller Name": seller_name,
-                        "Seller GSTIN": seller_gstin,
+                        "Seller GSTIN": seller_gstin, # Use the Gemini-validated/prioritized GSTIN
                         "HSN/SAC": hsn_sac,
                         "Buyer Name": buyer_name,
-                        "Buyer GSTIN": buyer_gstin,
+                        "Buyer GSTIN": buyer_gstin, # Use the Gemini-validated/prioritized GSTIN
                         "Expense Ledger": expense_ledger,
                         "Taxable Amount": taxable_amount,
                         "CGST": cgst,
@@ -570,7 +601,7 @@ if results and st.session_state.get("process_triggered", False):
         download_cols_ordered = [col for col in display_cols if col not in currency_cols_mapping.values() and col != 'TDS Rate (%)']
         for col_name in ["Taxable Amount", "CGST", "SGST", "IGST", "Total Amount", "TDS Amount", "Amount Payable", "TDS Rate"]:
             if col_name in df.columns and col_name not in download_cols_ordered:
-                download_cols_ordered.append(col_name)
+                    download_cols_ordered.append(col_name)
 
         csv_data = download_df[download_cols_ordered].to_csv(index=False).encode("utf-8")
         st.download_button("📥 Download Results as CSV", csv_data, "invoice_results.csv", "text/csv")
