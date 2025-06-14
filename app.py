@@ -16,7 +16,7 @@ import locale
 import re
 from dateutil import parser
 import json
-from contextlib import redirect_stdout # Added for debugging info
+from contextlib import redirect_stdout
 
 locale.setlocale(locale.LC_ALL, '')
 
@@ -106,10 +106,8 @@ def format_currency(x):
     except:
         return "₹0.00"
 
-# Note: is_valid_gstin and extract_gstin_from_text functions are kept
-# as they might still be useful, but the main logic will prioritize raw_data.get().
 def is_valid_gstin(gstin):
-    """Validates an Indian GSTIN format."""
+    """Validates an Indian GSTIN format, strictly requiring 15 digits."""
     if not gstin:
         return False
         
@@ -119,21 +117,73 @@ def is_valid_gstin(gstin):
         return False
         
     # Standard GSTIN pattern: 2-digit state code, 10-char PAN, 1-char entity code, Z, 1-char checksum
-    # The [A-Z0-9]{10} for PAN is flexible, covering both individuals (A-Z) and businesses (A-Z0-9)
     pattern = r"^\d{2}[A-Z0-9]{10}[A-Z]{1}[A-Z0-9]{1}[Z]{1}[A-Z0-9]{1}$"
     return bool(re.match(pattern, cleaned))
 
-def extract_gstin_from_text(text):
-    """Extracts the first valid GSTIN found in a given text string."""
-    if not text:
-        return ""
-    # Regex to find potential GSTINs. Captures the full 15-char string.
-    matches = re.findall(r'\b(\d{2}[A-Z0-9]{10}[A-Z]{1}[A-Z0-9]{1}Z[A-Z0-9]{1})\b', text.upper())
+def is_potential_gstin(gstin):
+    """
+    Checks if a string *looks like* a GSTIN (matches the pattern)
+    but is not necessarily 15 digits long. This is for identifying
+    malformed but patterned GSTINs.
+    """
+    if not gstin:
+        return False
     
-    for match in matches:
-        if is_valid_gstin(match): # Validate each potential match
-            return match
-    return ""
+    cleaned = re.sub(r'[^A-Z0-9]', '', gstin.upper())
+    
+    # Pattern to match the structure without strict length enforcement for the whole string
+    # We allow the final 3 characters to be flexible in quantity for the 'less than 15 digits' case
+    # This pattern captures the initial 12 characters accurately and then allows for variation
+    # However, for the purpose of identifying "malformed but patterned" we check if it starts like one
+    # and has some length. The primary is_valid_gstin already handles the strict 15.
+    # So, here we are looking for patterns that *start* like a GSTIN but are shorter.
+    # A simplified check: 2 digits, 10 alphanumeric. The last 3 are often '1ZA' or similar.
+    # So, we check for length between 5 and 14 and the general pattern.
+    if 5 <= len(cleaned) <= 14:
+        # A more relaxed pattern to catch partial or malformed ones.
+        # This regex looks for 2 digits, then at least 3 alphanumeric, and is case-insensitive.
+        # It's a heuristic to say "this *might* be a GSTIN based on its start."
+        pattern = r"^\d{2}[A-Z0-9]{3,12}$" # At least 5 total characters (2+3), up to 14 total (2+12)
+        return bool(re.match(pattern, cleaned))
+    return False
+
+def extract_gstin_from_text(text):
+    """
+    Extracts the first valid 15-digit GSTIN from text.
+    If no valid 15-digit GSTIN is found, it looks for potential (shorter) GSTINs
+    and returns the first one found along with a flag.
+    Returns (gstin_string, is_valid_15_digit).
+    """
+    if not text:
+        return "", False
+    
+    cleaned_text = re.sub(r'[^A-Z0-9\s]', '', text.upper()) # Remove non-alphanumeric except spaces for broad matching
+    
+    # First, try to find a perfect 15-digit GSTIN
+    # Regex for 15-char: \d{2}[A-Z0-9]{10}[A-Z]{1}[A-Z0-9]{1}[Z]{1}[A-Z0-9]{1}
+    # More robust findall for patterns potentially separated by spaces, dashes etc.
+    # Capture groups help extract the clean GSTIN
+    
+    # Pattern to capture 15 alphanumeric characters that broadly look like a GSTIN
+    # We use a broader pattern here to capture potential candidates and then validate.
+    # This aims to catch things like "27ABCDE1234F1Z5"
+    gstin_candidates = re.findall(r'\b\d{2}[A-Z0-9]{10}[A-Z0-9]{3}\b', cleaned_text)
+    
+    for candidate in gstin_candidates:
+        if is_valid_gstin(candidate):
+            return candidate, True
+
+    # If no 15-digit valid GSTIN, look for shorter, patterned ones (5-14 digits)
+    # This regex is a bit more flexible to catch partials that still follow the initial structure.
+    # It tries to find sequences that start like GSTINs but might be truncated.
+    potential_gstin_candidates = re.findall(r'\b\d{2}[A-Z0-9]{3,12}\b', cleaned_text)
+
+    for candidate in potential_gstin_candidates:
+        # If it's not 15 digits but matches our potential pattern (e.g., 5-14 chars)
+        if len(candidate) < 15 and is_potential_gstin(candidate):
+            return candidate, False # Return the shorter one, and indicate it's not 15-digit valid
+            
+    return "", False # No GSTIN found or no valid/potential one
 
 def determine_tds_rate(expense_ledger, tds_str="", place_of_supply=""):
     """Determines TDS rate based on expense ledger, TDS string, and place of supply."""
@@ -219,8 +269,8 @@ main_prompt = (
     "- 'invoice_number': The unique identifier of the invoice. Extract as is.\n"
     "- 'date': The invoice date in DD/MM/YYYY format. If year is 2-digit, assume current century (e.g., 24 -> 2024).\n"
     "- 'taxable_amount': This is the subtotal, the amount BEFORE any taxes (CGST, SGST, IGST) are applied. Must be a number.\n"
-    "- 'gstin': The GSTIN of the seller (the entity issuing the invoice). Must be a 15-character alphanumeric string. Prioritize the GSTIN explicitly labeled as 'GSTIN' or associated with the seller's main details.\n"
-    "- 'buyer_gstin': The GSTIN of the buyer (the entity receiving the invoice). Must be a 15-character alphanumeric string. Prioritize the GSTIN explicitly labeled as 'Buyer GSTIN' or associated with the buyer's details.\n"
+    "- 'gstin': The GSTIN of the seller (the entity issuing the invoice). Must be a 15-character alphanumeric string. Prioritize the GSTIN explicitly labeled as 'GSTIN' or associated with the seller's main details. If a GSTIN is found but is NOT 15 characters, *still extract it* but add a note to the 'narration' field indicating it's not 15 digits.\n"
+    "- 'buyer_gstin': The GSTIN of the buyer (the entity receiving the invoice). Must be a 15-character alphanumeric string. Prioritize the GSTIN explicitly labeled as 'Buyer GSTIN' or associated with the buyer's details. If a GSTIN is found but is NOT 15 characters, *still extract it* but add a note to the 'narration' field indicating it's not 15 digits.\n"
     "- 'hsn_sac': Crucial for Indian invoices. "
     "  - HSN (Harmonized System of Nomenclature) is for goods."
     "  - SAC (Service Accounting Code) is for services."
@@ -343,14 +393,36 @@ if uploaded_files:
                     date = raw_data.get("date", "")
                     seller_name = raw_data.get("seller_name", "")
 
-                    # Reverted GSTIN extraction for Seller: Directly use raw_data.get()
-                    seller_gstin = raw_data.get("gstin", "")
-                    
+                    # Process Seller GSTIN
+                    seller_gstin_raw = raw_data.get("gstin", "")
+                    seller_gstin = seller_gstin_raw
+                    seller_gstin_note = ""
+                    if seller_gstin_raw and not is_valid_gstin(seller_gstin_raw):
+                        if len(seller_gstin_raw) < 15 and is_potential_gstin(seller_gstin_raw):
+                            seller_gstin_note = f" (Seller GSTIN '{seller_gstin_raw}' is less than 15 digits)"
+                        elif len(seller_gstin_raw) > 15:
+                            seller_gstin_note = f" (Seller GSTIN '{seller_gstin_raw}' is more than 15 digits)"
+                        else:
+                            seller_gstin_note = f" (Seller GSTIN '{seller_gstin_raw}' is not a valid 15-digit format)"
+                    elif not seller_gstin_raw:
+                        seller_gstin_note = " (Seller GSTIN missing)"
+
                     hsn_sac = raw_data.get("hsn_sac", "")
                     buyer_name = raw_data.get("buyer_name", "")
 
-                    # Reverted GSTIN extraction for Buyer: Directly use raw_data.get()
-                    buyer_gstin = raw_data.get("buyer_gstin", "")
+                    # Process Buyer GSTIN
+                    buyer_gstin_raw = raw_data.get("buyer_gstin", "")
+                    buyer_gstin = buyer_gstin_raw
+                    buyer_gstin_note = ""
+                    if buyer_gstin_raw and not is_valid_gstin(buyer_gstin_raw):
+                        if len(buyer_gstin_raw) < 15 and is_potential_gstin(buyer_gstin_raw):
+                            buyer_gstin_note = f" (Buyer GSTIN '{buyer_gstin_raw}' is less than 15 digits)"
+                        elif len(buyer_gstin_raw) > 15:
+                            buyer_gstin_note = f" (Buyer GSTIN '{buyer_gstin_raw}' is more than 15 digits)"
+                        else:
+                            buyer_gstin_note = f" (Buyer GSTIN '{buyer_gstin_raw}' is not a valid 15-digit format)"
+                    elif not buyer_gstin_raw:
+                        buyer_gstin_note = " (Buyer GSTIN missing)"
                     
                     expense_ledger = raw_data.get("expense_ledger", "")
                     taxable_amount = safe_float(raw_data.get("taxable_amount", 0.0))
@@ -391,8 +463,8 @@ if uploaded_files:
                     buyer_gstin_display = buyer_gstin or "N/A"
                     narration = (
                         f"Invoice {invoice_number or 'N/A'} dated {date or 'N/A'} "
-                        f"was issued by {seller_name or 'N/A'} (GSTIN: {seller_gstin or 'N/A'}, HSN/SAC: {hsn_sac or 'N/A'}) "
-                        f"to {buyer_name or 'N/A'} (GSTIN: {buyer_gstin_display}), "
+                        f"was issued by {seller_name or 'N/A'} (GSTIN: {seller_gstin or 'N/A'}{seller_gstin_note}, HSN/SAC: {hsn_sac or 'N/A'}) "
+                        f"to {buyer_name or 'N/A'} (GSTIN: {buyer_gstin_display}{buyer_gstin_note}), "
                         f"with a taxable amount of ₹{taxable_amount:,.2f}. "
                         f"Taxes applied - CGST: ₹{cgst:,.2f}, SGST: ₹{sgst:,.2f}, IGST: ₹{igst:,.2f}. "
                         f"Total Amount: ₹{total_amount:,.2f}. "
@@ -580,7 +652,7 @@ if results:
         # Add original numeric columns back for download, if they exist
         for col_name in ["Taxable Amount", "CGST", "SGST", "IGST", "Total Amount", "TDS Amount", "Amount Payable", "TDS Rate"]:
             if col_name in df.columns and col_name not in download_cols_ordered:
-                 download_cols_ordered.append(col_name) # Append if not already there, to maintain order
+                    download_cols_ordered.append(col_name) # Append if not already there, to maintain order
 
         # CSV Download
         csv_data = download_df[download_cols_ordered].to_csv(index=False).encode("utf-8")
