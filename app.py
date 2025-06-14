@@ -17,6 +17,11 @@ import re
 from dateutil import parser
 import json
 
+# --- Placeholders for dynamic content, including the file uploader ---
+# This placeholder will be used to completely redraw the file uploader
+# Define it early to ensure it's always available
+file_uploader_placeholder = st.empty() # MOVED THIS LINE HERE
+
 # Import pytesseract
 try:
     import pytesseract
@@ -76,6 +81,7 @@ if "process_triggered" not in st.session_state:
 # This key is only for the file uploader to force reset
 if "file_uploader_key" not in st.session_state:
     st.session_state["file_uploader_key"] = 0
+
 
 # --- Admin/API Key Config ---
 st.sidebar.header("🔐 AI Config")
