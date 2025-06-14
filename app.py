@@ -1,4 +1,3 @@
-```python
 import streamlit as st
 from pydantic import BaseModel, Field
 from typing import List, Optional, Union
@@ -731,5 +730,3 @@ if st.session_state.summary_rows:
     )
 elif not uploaded_files:
      st.info("Upload PDF files and click 'Process Invoices' to see results.")
-
-```
