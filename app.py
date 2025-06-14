@@ -1,3 +1,4 @@
+```python
 import streamlit as st
 st.set_page_config(layout="wide")
 
@@ -30,7 +31,7 @@ def load_lottie_json_safe(url):
     """Loads Lottie animation JSON safely from a URL."""
     try:
         r = requests.get(url)
-        r.raise_for_status()
+        r.raise_or_status()
         return r.json()
     except requests.exceptions.RequestException as e:
         st.warning(f"Could not load Lottie animation from {url}: {e}")
@@ -107,13 +108,13 @@ except Exception as e:
 try:
     genai.configure(api_key=gemini_api_key)
     # Directly specify the model name to avoid list_models() error
-    # Try gemini-1.5-pro first, then fall back to gemini-pro-vision, then gemini-pro
+    # Try gemini-1.5-flash-latest first, then fall back to gemini-pro-vision, then gemini-pro
     try:
-        gemini_model = genai.GenerativeModel('gemini-1.5-pro')
+        gemini_model = genai.GenerativeModel('gemini-1.5-flash-latest')
     except Exception:
         try:
             gemini_model = genai.GenerativeModel('gemini-pro-vision')
-            st.warning("Could not load 'gemini-1.5-pro'. Using 'gemini-pro-vision' for Gemini.")
+            st.warning("Could not load 'gemini-1.5-flash-latest'. Using 'gemini-pro-vision' for Gemini.")
         except Exception:
             gemini_model = genai.GenerativeModel('gemini-pro')
             st.warning("Could not load vision-capable Gemini models. Falling back to 'gemini-pro'. GSTIN extraction from images might be less accurate.")
@@ -622,3 +623,4 @@ else:
         st.info("Upload one or more scanned invoices to get started.")
     elif st.session_state.get("uploaded_files") and not st.session_state.get("process_triggered", False):
         st.info("Files uploaded. Click 'Process Invoices' to start extraction.")
+```
