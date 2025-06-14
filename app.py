@@ -347,13 +347,10 @@ st.markdown("""
         font-family: 'Roboto', 'Helvetica Neue', Arial, sans-serif; 
         color: #333333; /* Default dark color for general markdown text */
     }
+    /* Keep generic alert styling, but removed specific .info modifications */
     .stAlert { 
         border-radius: 8px; 
         font-family: 'Roboto', 'Helvetica Neue', Arial, sans-serif; 
-    }
-    .stAlert.info { 
-        background-color: #000000; /* Set to pure black */
-        color: #FFFFFF !important; /* Force white color on the alert container itself */
     }
     .stAlert.success { 
         background-color: #e8f5e9; 
@@ -365,20 +362,6 @@ st.markdown("""
     }
     .stProgress > div > div > div > div { 
         background-color: #3b82f6 !important; 
-    }
-    
-    /* *** CRITICAL FIX for instruction text visibility (MAXIMUM SPECIFICITY) *** */
-    /* Target the stMarkdownContainer and all its direct/indirect children */
-    .stAlert.info div[data-testid="stMarkdownContainer"] *,
-    .stAlert.info div[data-testid="stMarkdownContainer"] p, 
-    .stAlert.info div[data-testid="stMarkdownContainer"] li,
-    .stAlert.info div[data-testid="stMarkdownContainer"] span,
-    .stAlert.info div[data-testid="stMarkdownContainer"] strong,
-    .stAlert.info div[data-testid="stMarkdownContainer"] em, /* for italic text */
-    .stAlert.info div[data-testid="stMarkdownContainer"] a /* for links within the info box */
-    { 
-        color: #FFFFFF !important; /* Force white text for all these elements */
-        text-shadow: none !important; /* Ensure no conflicting text shadows */
     }
 </style>
 """, unsafe_allow_html=True)
@@ -463,14 +446,17 @@ else: # Default behavior: user must enter keys manually
         model_id_input = st.sidebar.text_input("OpenAI Model ID:", DEFAULT_OPENAI_MODEL_ID, key="openai_model_id")
         st.sidebar.caption(f"Default is `{DEFAULT_OPENAI_MODEL_ID}`. Ensure it's a vision model and supports JSON output.")
 
-st.info(
-    "**Instructions:**\n"
-    f"1. Select your preferred AI model ({model_choice}) in the sidebar.\n"
-    "   💡 **Recommendation:** Use **Google Gemini** for **scanned or blurred documents**, and **OpenAI GPT** for **system-generated (clear) PDF invoices**.\n"
-    "2. If you know the admin password, enter it to use pre-configured API keys from `Streamlit Secrets`.\n"
-    "3. Upload one or more PDF invoice files.\n"
-    "4. Click 'Process Invoices' to extract data.\n"
-    "   The extracted data will be displayed in a table and available for download as Excel."
+# Changed st.info to st.markdown for the instructions section
+st.markdown(
+    f"""
+    **Instructions:**
+    1. Select your preferred AI model ({model_choice}) in the sidebar.
+       💡 **Recommendation:** Use **Google Gemini** for **scanned or blurred documents**, and **OpenAI GPT** for **system-generated (clear) PDF invoices**.\n"
+    2. If you know the admin password, enter it to use pre-configured API keys from `Streamlit Secrets`.
+    3. Upload one or more PDF invoice files.
+    4. Click 'Process Invoices' to extract data.
+       The extracted data will be displayed in a table and available for download as Excel.
+    """
 )
 
 uploaded_files = st.file_uploader(
@@ -534,7 +520,7 @@ if st.button("🚀 Process Invoices", type="primary"):
 
             for i, uploaded_file_obj in enumerate(uploaded_files):
                 st.markdown(f"---")
-                # Simplified progress message
+                # This st.info will retain default Streamlit styling (blue box)
                 st.info(f"Processing file: **{uploaded_file_obj.name}** ({i+1}/{total_files}) using **{model_choice}**...")
                 temp_file_path = None
                 extracted_data = None
