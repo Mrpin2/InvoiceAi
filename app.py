@@ -6,9 +6,8 @@ import os
 import tempfile
 import io
 from datetime import datetime
-import json # Import for JSON parsing from OpenAI response
-import base64 # Import for base64 encoding for OpenAI Vision
-
+import json
+import base64
 
 # --- Import Libraries for Both Models ---
 try:
@@ -71,7 +70,7 @@ def format_currency(amount: Optional[float]) -> str:
 # --- Extraction Functions (Model-Specific) ---
 
 def extract_from_gemini(
-    client_instance: 'genai.Client', # Type hint as string literal for forward reference if needed
+    client_instance: 'genai.Client',
     gemini_model_id: str,
     file_path: str,
     pydantic_schema: BaseModel,
@@ -120,7 +119,6 @@ def extract_from_gemini(
         if gemini_file_resource:
             try:
                 st.info(f"Gemini: Attempting to delete '{gemini_file_resource.name}' from File API...")
-                # client_instance.files.delete is part of the newer genai library versions
                 if hasattr(client_instance, 'files') and hasattr(client_instance.files, 'delete'):
                     client_instance.files.delete(name=gemini_file_resource.name)
                     st.success(f"Gemini: Successfully deleted '{gemini_file_resource.name}'.")
@@ -131,7 +129,7 @@ def extract_from_gemini(
 
 
 def extract_from_openai(
-    client_instance: 'OpenAI', # Type hint as string literal
+    client_instance: 'OpenAI',
     openai_model_id: str,
     file_path: str,
     pydantic_schema: BaseModel,
@@ -140,7 +138,6 @@ def extract_from_openai(
     display_name = os.path.basename(file_path)
 
     try:
-        # Read the file bytes and base64 encode for OpenAI Vision
         with open(file_path, "rb") as f:
             file_content_bytes = f.read()
         base64_file = base64.b64encode(file_content_bytes).decode('utf-8')
@@ -167,36 +164,34 @@ def extract_from_openai(
                 {"role": "user", "content": [
                     {"type": "text", "text": user_prompt_text},
                     {"type": "image_url", "image_url": {
-                        # OpenAI's vision models support PDF data URLs for some models (e.g., gpt-4o)
                         "url": f"data:application/pdf;base64,{base64_file}"
                     }}
                 ]}
             ],
-            response_format={"type": "json_object"}, # Instruct to return JSON
-            max_tokens=4000 # Increase max tokens to ensure full JSON can be returned
+            response_format={"type": "json_object"},
+            max_tokens=4000
         )
 
         if response and response.choices and response.choices[0].message and response.choices[0].message.content:
             json_string = response.choices[0].message.content
             st.markdown("##### Raw JSON from OpenAI:")
-            st.code(json_string, language="json") # Show the raw JSON from OpenAI for debugging
+            st.code(json_string, language="json")
             try:
                 extracted_dict = json.loads(json_string)
-                # Validate with Pydantic model
                 extracted_invoice = pydantic_schema.parse_obj(extracted_dict)
                 st.success(f"OpenAI: Data extracted and validated for '{display_name}'.")
                 return extracted_invoice
             except json.JSONDecodeError as e:
                 st.error(f"OpenAI: Failed to decode JSON from response for '{display_name}': {e}")
-                st.code(json_string, language="json") # Show malformed JSON
+                st.code(json_string, language="json")
                 return None
             except Exception as e:
                 st.error(f"OpenAI: Failed to parse extracted data into schema for '{display_name}': {e}")
-                st.code(json_string, language="json") # Show the JSON it tried to parse
+                st.code(json_string, language="json")
                 return None
         else:
             st.warning(f"OpenAI: No content received or unexpected response structure for '{display_name}'.")
-            st.json(response.dict()) # Show the full response object
+            st.json(response.dict())
             return None
 
     except Exception as e:
@@ -210,49 +205,20 @@ st.set_page_config(layout="wide", page_title="📄 AI Invoice Extractor")
 # Custom CSS for a bit more flair
 st.markdown("""
 <style>
-    /* General app styling */
-    .stApp {
-        background-color: #f0f2f6; /* Light gray background */
-        color: #333333;
-    }
-    h1, h2, h3 {
-        color: #1e3a8a; /* Dark blue for headers */
-    }
+    .stApp { background-color: #f0f2f6; color: #333333; }
+    h1, h2, h3 { color: #1e3a8a; }
     .stButton>button {
-        background-color: #3b82f6; /* Blue button */
-        color: white;
-        border-radius: 8px;
-        padding: 10px 20px;
-        font-size: 16px;
-        font-weight: bold;
+        background-color: #3b82f6; color: white; border-radius: 8px;
+        padding: 10px 20px; font-size: 16px; font-weight: bold;
         transition: background-color 0.3s ease;
     }
-    .stButton>button:hover {
-        background-color: #2563eb; /* Darker blue on hover */
-    }
-    .stMarkdown p {
-        font-size: 1.05em;
-        line-height: 1.6;
-    }
-    /* Info/Success/Error boxes */
-    .stAlert {
-        border-radius: 8px;
-    }
-    .stAlert.info {
-        background-color: #e0f2f7; /* Light blue */
-        color: #0288d1;
-    }
-    .stAlert.success {
-        background-color: #e8f5e9; /* Light green */
-        color: #2e7d32;
-    }
-    .stAlert.error {
-        background-color: #ffebee; /* Light red */
-        color: #c62828;
-    }
-    .stProgress > div > div > div > div {
-        background-color: #3b82f6 !important; /* Blue progress bar */
-    }
+    .stButton>button:hover { background-color: #2563eb; }
+    .stMarkdown p { font-size: 1.05em; line-height: 1.6; }
+    .stAlert { border-radius: 8px; }
+    .stAlert.info { background-color: #e0f2f7; color: #0288d1; }
+    .stAlert.success { background-color: #e8f5e9; color: #2e7d32; }
+    .stAlert.error { background-color: #ffebee; color: #c62828; }
+    .stProgress > div > div > div > div { background-color: #3b82f6 !important; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -261,6 +227,19 @@ st.title("📄 AI Invoice Extractor (Multi-Model Powered)")
 
 st.sidebar.header("Configuration")
 
+# --- Admin Panel for using secrets ---
+ADMIN_PASSWORD = st.secrets.get("ADMIN_PASSWORD", "default_admin_password_if_not_set_in_secrets") # Fallback for local testing
+admin_password_input = st.sidebar.text_input("Admin Password (Optional):", type="password", key="admin_pass")
+
+use_secrets_keys = False
+if admin_password_input: # Only attempt if something is entered
+    if admin_password_input == ADMIN_PASSWORD:
+        st.sidebar.success("Admin mode activated. Using API keys from secrets.")
+        use_secrets_keys = True
+    else:
+        st.sidebar.error("Incorrect admin password.")
+        use_secrets_keys = False # Ensure it's false if password is wrong
+
 # Model Selection
 model_choice = st.sidebar.radio(
     "Choose AI Model:",
@@ -268,30 +247,57 @@ model_choice = st.sidebar.radio(
     key="model_choice"
 )
 
-# API Key Inputs (Conditional)
-# Using st.empty() to control rendering ensures only one set of inputs is shown
-api_key_placeholder = st.sidebar.empty()
-model_id_placeholder = st.sidebar.empty()
-model_caption_placeholder = st.sidebar.empty()
-
+# API Key Inputs (Conditional based on admin mode)
 selected_api_key = None
 model_id_input = None
 
-if model_choice == "Google Gemini":
-    selected_api_key = api_key_placeholder.text_input("Enter your Gemini API Key:", type="password", key="gemini_key")
-    DEFAULT_GEMINI_MODEL_ID = "gemini-1.5-flash-latest"
-    model_id_input = model_id_placeholder.text_input("Gemini Model ID:", DEFAULT_GEMINI_MODEL_ID, key="gemini_model_id")
-    model_caption_placeholder.caption(f"Default is `{DEFAULT_GEMINI_MODEL_ID}`. Ensure it supports JSON schema.")
-elif model_choice == "OpenAI GPT":
-    selected_api_key = api_key_placeholder.text_input("Enter your OpenAI API Key:", type="password", key="openai_key")
-    DEFAULT_OPENAI_MODEL_ID = "gpt-4o" # GPT-4o is excellent for vision + JSON
-    model_id_input = model_id_placeholder.text_input("OpenAI Model ID:", DEFAULT_OPENAI_MODEL_ID, key="openai_model_id")
-    model_caption_placeholder.caption(f"Default is `{DEFAULT_OPENAI_MODEL_ID}`. Ensure it's a vision model and supports JSON output.")
+if use_secrets_keys:
+    # Attempt to load from secrets
+    if model_choice == "Google Gemini":
+        selected_api_key = st.secrets.get("GEMINI_API_KEY")
+        model_id_input = st.secrets.get("GEMINI_MODEL_ID", "gemini-1.5-flash-latest")
+        if not selected_api_key:
+            st.sidebar.warning("GEMINI_API_KEY not found in secrets. Please add it to .streamlit/secrets.toml")
+        st.sidebar.text_input("Gemini Model ID:", model_id_input, key="gemini_model_id_secrets", disabled=True)
+        st.sidebar.caption(f"Using model ID from secrets: `{model_id_input}`")
+
+    elif model_choice == "OpenAI GPT":
+        selected_api_key = st.secrets.get("OPENAI_API_KEY")
+        model_id_input = st.secrets.get("OPENAI_MODEL_ID", "gpt-4o")
+        if not selected_api_key:
+            st.sidebar.warning("OPENAI_API_KEY not found in secrets. Please add it to .streamlit/secrets.toml")
+        st.sidebar.text_input("OpenAI Model ID:", model_id_input, key="openai_model_id_secrets", disabled=True)
+        st.sidebar.caption(f"Using model ID from secrets: `{model_id_input}`")
+
+    # Inform user about which keys are being used
+    if selected_api_key:
+        st.sidebar.info(f"Using {model_choice} API Key from `secrets.toml`.")
+    else:
+        st.sidebar.warning(f"No {model_choice} API Key loaded from `secrets.toml`. "
+                           "Please enter it manually below or add it to `secrets.toml`.")
+        # Fallback to manual input if secrets not found, even in admin mode
+        if model_choice == "Google Gemini":
+            selected_api_key = st.sidebar.text_input("Enter your Gemini API Key:", type="password", key="gemini_key_manual_fallback")
+        elif model_choice == "OpenAI GPT":
+            selected_api_key = st.sidebar.text_input("Enter your OpenAI API Key:", type="password", key="openai_key_manual_fallback")
+
+
+else: # Default behavior: user must enter keys
+    if model_choice == "Google Gemini":
+        selected_api_key = st.sidebar.text_input("Enter your Gemini API Key:", type="password", key="gemini_key")
+        DEFAULT_GEMINI_MODEL_ID = "gemini-1.5-flash-latest"
+        model_id_input = st.sidebar.text_input("Gemini Model ID:", DEFAULT_GEMINI_MODEL_ID, key="gemini_model_id")
+        st.sidebar.caption(f"Default is `{DEFAULT_GEMINI_MODEL_ID}`. Ensure it supports JSON schema.")
+    elif model_choice == "OpenAI GPT":
+        selected_api_key = st.sidebar.text_input("Enter your OpenAI API Key:", type="password", key="openai_key")
+        DEFAULT_OPENAI_MODEL_ID = "gpt-4o"
+        model_id_input = st.sidebar.text_input("OpenAI Model ID:", DEFAULT_OPENAI_MODEL_ID, key="openai_model_id")
+        st.sidebar.caption(f"Default is `{DEFAULT_OPENAI_MODEL_ID}`. Ensure it's a vision model and supports JSON output.")
 
 st.info(
     "**Instructions:**\n"
     f"1. Select your preferred AI model ({model_choice}) in the sidebar.\n"
-    "2. Enter the corresponding API Key and Model ID in the sidebar.\n"
+    "2. If you know the admin password, enter it to use pre-configured API keys. Otherwise, enter your own.\n"
     "3. Upload one or more PDF invoice files.\n"
     "4. Click 'Process Invoices' to extract data.\n"
     "   The extracted data will be displayed in a table and available for download as Excel."
@@ -303,7 +309,6 @@ uploaded_files = st.file_uploader(
     accept_multiple_files=True
 )
 
-# Initialize session state variables if they don't exist
 if 'summary_rows' not in st.session_state:
     st.session_state.summary_rows = []
 if 'gemini_client' not in st.session_state:
@@ -320,10 +325,9 @@ if st.button("🚀 Process Invoices", type="primary"):
     elif not model_id_input:
         st.error(f"Please specify a {model_choice} Model ID in the sidebar.")
     else:
-        # Initialize the correct client based on choice
         client_initialized = False
         if model_choice == "Google Gemini":
-            if 'genai' in globals(): # Check if genai was successfully imported
+            if 'genai' in globals():
                 try:
                     st.session_state.gemini_client = genai.Client(api_key=selected_api_key)
                     st.success("Gemini client initialized successfully!")
@@ -335,7 +339,7 @@ if st.button("🚀 Process Invoices", type="primary"):
                 st.error("Gemini library not found. Cannot initialize Gemini client.")
 
         elif model_choice == "OpenAI GPT":
-            if 'OpenAI' in globals(): # Check if OpenAI was successfully imported
+            if 'OpenAI' in globals():
                 try:
                     st.session_state.openai_client = OpenAI(api_key=selected_api_key)
                     st.success("OpenAI client initialized successfully!")
@@ -347,23 +351,21 @@ if st.button("🚀 Process Invoices", type="primary"):
                 st.error("OpenAI library not found. Cannot initialize OpenAI client.")
         
         if not client_initialized:
-            st.stop() # Stop execution if client failed to initialize or library missing
+            st.stop()
 
-        # Proceed only if the client was successfully initialized
         if (model_choice == "Google Gemini" and st.session_state.gemini_client) or \
            (model_choice == "OpenAI GPT" and st.session_state.openai_client):
             
-            st.session_state.summary_rows = [] # Clear previous results
+            st.session_state.summary_rows = []
             progress_bar = st.progress(0)
             total_files = len(uploaded_files)
 
             for i, uploaded_file_obj in enumerate(uploaded_files):
-                st.markdown(f"---") # Separator between files
+                st.markdown(f"---")
                 st.info(f"Processing file: **{uploaded_file_obj.name}** ({i+1}/{total_files}) using **{model_choice}**...")
                 temp_file_path = None
                 extracted_data = None
                 try:
-                    # Save UploadedFile to a temporary file to get a file_path
                     with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(uploaded_file_obj.name)[1]) as tmp:
                         tmp.write(uploaded_file_obj.getvalue())
                         temp_file_path = tmp.name
@@ -387,7 +389,6 @@ if st.button("🚀 Process Invoices", type="primary"):
                     if extracted_data:
                         st.success(f"Successfully extracted data from **{uploaded_file_obj.name}** 🎉")
 
-                        # Apply formatting and handle None values for consistent display
                         parsed_date = parse_date_safe(extracted_data.date)
                         cgst = extracted_data.cgst if extracted_data.cgst is not None else 0.0
                         sgst = extracted_data.sgst if extracted_data.sgst is not None else 0.0
@@ -412,7 +413,6 @@ if st.button("🚀 Process Invoices", type="primary"):
                             f"TDS: {tds_display}. RCM: {rcm_display}."
                         )
 
-                        # Store data for summary table
                         st.session_state.summary_rows.append({
                             "File Name": uploaded_file_obj.name,
                             "Invoice Number": extracted_data.invoice_number,
@@ -421,7 +421,7 @@ if st.button("🚀 Process Invoices", type="primary"):
                             "Seller GSTIN": seller_gstin_display,
                             "Buyer Name": buyer_name_display,
                             "Buyer GSTIN": buyer_gstin_display,
-                            "Total Gross Worth": total_gross_worth, # Keep raw for Excel
+                            "Total Gross Worth": total_gross_worth,
                             "CGST": cgst,
                             "SGST": sgst,
                             "IGST": igst,
@@ -432,9 +432,7 @@ if st.button("🚀 Process Invoices", type="primary"):
                             "Narration": narration,
                         })
 
-                        # Display detailed extraction for the current file using an expander
                         with st.expander(f"📋 Details for {uploaded_file_obj.name} (using {model_choice})"):
-                            # This will show the Pydantic object's dictionary representation
                             st.subheader("Raw Extracted Data (JSON):")
                             st.json(extracted_data.dict())
                             st.subheader("Extracted Summary (Narration):")
@@ -445,7 +443,7 @@ if st.button("🚀 Process Invoices", type="primary"):
                                 line_item_data = [{
                                     "Description": item.description,
                                     "Quantity": item.quantity,
-                                    "Gross Worth": format_currency(item.gross_worth), # Format for display
+                                    "Gross Worth": format_currency(item.gross_worth),
                                     "HSN/SAC": item.hsn_sac or "N/A"
                                 } for item in extracted_data.line_items]
                                 st.dataframe(pd.DataFrame(line_item_data), use_container_width=True)
@@ -459,15 +457,13 @@ if st.button("🚀 Process Invoices", type="primary"):
                     st.error(f"An unexpected error occurred while processing **{uploaded_file_obj.name}**: {e_outer}")
                     st.exception(e_outer)
                 finally:
-                    # Clean up: Delete the temporary local file
                     if temp_file_path and os.path.exists(temp_file_path):
                         os.unlink(temp_file_path)
-                        # st.write(f"Cleaned up temporary local file: `{temp_file_path}`") # Can be noisy, uncomment for debug
                 progress_bar.progress((i + 1) / total_files)
 
             st.markdown(f"---")
             if st.session_state.summary_rows:
-                st.balloons() # Celebrate successful batch processing!
+                st.balloons()
                 st.success("All selected invoices processed!")
 
 
@@ -475,16 +471,13 @@ if st.session_state.summary_rows:
     st.subheader("📊 Consolidated Extracted Invoice Summary")
     df = pd.DataFrame(st.session_state.summary_rows)
 
-    # Make a copy for display to apply string formatting without affecting raw numbers for Excel
     df_display = df.copy()
     for col in ["Total Gross Worth", "CGST", "SGST", "IGST"]:
         df_display[col] = df_display[col].apply(format_currency)
 
     st.dataframe(df_display, use_container_width=True)
 
-    # Provide download link for Excel
     output_excel = io.BytesIO()
-    # Use the original df which has numerical values for excel export
     with pd.ExcelWriter(output_excel, engine='openpyxl') as writer:
         df.to_excel(writer, index=False, sheet_name='InvoiceSummary')
     excel_data = output_excel.getvalue()
