@@ -106,12 +106,18 @@ except Exception as e:
 
 try:
     genai.configure(api_key=gemini_api_key)
-    # Ensure a vision-capable model is used for image input
-    gemini_model = genai.GenerativeModel('gemini-1.5-pro' if '1.5-pro' in [m.name for m in genai.GenerativeModel.list_models()] else 'gemini-pro-vision')
-    # Fallback to gemini-pro if no vision model is found (though less effective for image tasks)
-    if 'vision' not in gemini_model.model_name and '1.5-pro' not in gemini_model.model_name:
-         gemini_model = genai.GenerativeModel('gemini-pro')
-         st.warning("No vision-capable Gemini model found. Falling back to 'gemini-pro'. GSTIN extraction from images might be less accurate.")
+    # Directly specify the model name to avoid list_models() error
+    # Try gemini-1.5-pro first, then fall back to gemini-pro-vision, then gemini-pro
+    try:
+        gemini_model = genai.GenerativeModel('gemini-1.5-pro')
+    except Exception:
+        try:
+            gemini_model = genai.GenerativeModel('gemini-pro-vision')
+            st.warning("Could not load 'gemini-1.5-pro'. Using 'gemini-pro-vision' for Gemini.")
+        except Exception:
+            gemini_model = genai.GenerativeModel('gemini-pro')
+            st.warning("Could not load vision-capable Gemini models. Falling back to 'gemini-pro'. GSTIN extraction from images might be less accurate.")
+
 except Exception as e:
     st.error(f"Failed to initialize Gemini client. Check your API key: {e}")
     st.stop()
