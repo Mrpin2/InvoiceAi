@@ -318,21 +318,59 @@ st.markdown("""
     body {
         font-family: 'Roboto', 'Helvetica Neue', Arial, sans-serif; /* Add popular sans-serif fonts */
     }
-    .stApp { background-color: #f0f2f6; color: #333333; font-family: 'Roboto', 'Helvetica Neue', Arial, sans-serif; }
-    h1, h2, h3 { color: #1e3a8a; font-family: 'Roboto', 'Helvetica Neue', Arial, sans-serif; }
+    .stApp { 
+        background-color: #f0f2f6; 
+        color: #333333; 
+        font-family: 'Roboto', 'Helvetica Neue', Arial, sans-serif; 
+    }
+    h1, h2, h3 { 
+        color: #1e3a8a; 
+        font-family: 'Roboto', 'Helvetica Neue', Arial, sans-serif; 
+    }
     .stButton>button {
-        background-color: #3b82f6; color: white; border-radius: 8px;
-        padding: 10px 20px; font-size: 16px; font-weight: bold;
+        background-color: #3b82f6; 
+        color: white; 
+        border-radius: 8px;
+        padding: 10px 20px; 
+        font-size: 16px; 
+        font-weight: bold;
         transition: background-color 0.3s ease;
         font-family: 'Roboto', 'Helvetica Neue', Arial, sans-serif;
     }
-    .stButton>button:hover { background-color: #2563eb; }
-    .stMarkdown p { font-size: 1.05em; line-height: 1.6; font-family: 'Roboto', 'Helvetica Neue', Arial, sans-serif; }
-    .stAlert { border-radius: 8px; font-family: 'Roboto', 'Helvetica Neue', Arial, sans-serif; }
-    .stAlert.info { background-color: #e0f2f7; color: #0288d1; }
-    .stAlert.success { background-color: #e8f5e9; color: #2e7d32; }
-    .stAlert.error { background-color: #ffebee; color: #c62828; }
-    .stProgress > div > div > div > div { background-color: #3b82f6 !important; }
+    .stButton>button:hover { 
+        background-color: #2563eb; 
+    }
+    .stMarkdown p { 
+        font-size: 1.05em; 
+        line-height: 1.6; 
+        font-family: 'Roboto', 'Helvetica Neue', Arial, sans-serif; 
+        color: #333333; /* Ensure text in markdown is dark enough */
+    }
+    .stAlert { 
+        border-radius: 8px; 
+        font-family: 'Roboto', 'Helvetica Neue', Arial, sans-serif; 
+    }
+    .stAlert.info { 
+        background-color: #e0f2f7; 
+        color: #0288d1; /* This is the main color of the info text itself */
+        font-weight: normal; /* Ensure it's not too light */
+    }
+    .stAlert.success { 
+        background-color: #e8f5e9; 
+        color: #2e7d32; 
+    }
+    .stAlert.error { 
+        background-color: #ffebee; 
+        color: #c62828; 
+    }
+    .stProgress > div > div > div > div { 
+        background-color: #3b82f6 !important; 
+    }
+    /* Specific styling for the list items inside st.info, if they are rendered as p or li */
+    .stAlert.info p, .stAlert.info li {
+        color: #333333; /* Darker color for instruction text inside info box */
+        font-weight: 500; /* A bit bolder for readability */
+    }
 </style>
 """, unsafe_allow_html=True)
 
