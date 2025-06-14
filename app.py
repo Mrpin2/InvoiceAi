@@ -267,7 +267,7 @@ if uploaded_files:
                             "Date": "",
                             "Seller Name": "",
                             "Seller GSTIN": "",
-                            "HSN/SAC": "", # Explicitly ensure this key is present
+                            "HSN/SAC": "",
                             "Buyer Name": "",
                             "Buyer GSTIN": "",
                             "Taxable Amount": 0.0,
@@ -345,7 +345,7 @@ if uploaded_files:
                         "Date": date,
                         "Seller Name": seller_name,
                         "Seller GSTIN": seller_gstin,
-                        "HSN/SAC": hsn_sac, # This ensures the key is always here
+                        "HSN/SAC": hsn_sac,
                         "Buyer Name": buyer_name,
                         "Buyer GSTIN": buyer_gstin,
                         "Taxable Amount": taxable_amount,
@@ -374,7 +374,7 @@ if uploaded_files:
                 "Date": "",
                 "Seller Name": "",
                 "Seller GSTIN": "",
-                "HSN/SAC": "", # Explicitly ensure this key is present in error cases too
+                "HSN/SAC": "", 
                 "Buyer Name": "",
                 "Buyer GSTIN": "",
                 "Taxable Amount": 0.0,
