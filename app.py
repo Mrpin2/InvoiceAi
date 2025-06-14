@@ -283,6 +283,9 @@ main_prompt = (
     "Ensure the JSON output is clean and directly parsable."
 )
 
+# Define the file_uploader_placeholder here
+file_uploader_placeholder = st.empty()
+
 # Render the file uploader using the placeholder
 with file_uploader_placeholder.container():
     uploaded_files = st.file_uploader(
@@ -456,7 +459,7 @@ if st.session_state["uploaded_files"] and st.session_state["process_triggered"]:
                         f"with a taxable amount of ₹{taxable_amount:,.2f}. "
                         f"Taxes applied - CGST: ₹{cgst:,.2f}, SGST: ₹{sgst:,.2f}, IGST: ₹{igst:,.2f}. "
                         f"Total Amount: ₹{total_amount:,.2f}. "
-                        f"Place of supply: {place_of_supply or 'N/A'}. Expense: {expense_ledger or 'N/A'}. "
+                        f"Place of Supply: {place_of_supply or 'N/A'}. Expense: {expense_ledger or 'N/A'}. "
                         f"TDS: {tds_applicability} (Section: {tds_section or 'N/A'}) @ {tds_rate}% (₹{tds_amount:,.2f}). "
                         f"Amount Payable: ₹{amount_payable:,.2f}."
                     )
