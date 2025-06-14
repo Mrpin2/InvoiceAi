@@ -127,40 +127,40 @@ main_prompt = (
     "- 'gstin': The GSTIN of the seller (the entity issuing the invoice). Must be a 15-character alphanumeric string. Prioritize the GSTIN explicitly labeled as 'GSTIN' or associated with the seller's main details.\n"
     "- 'buyer_gstin': The GSTIN of the buyer (the entity receiving the invoice). Must be a 15-character alphanumeric string. Prioritize the GSTIN explicitly labeled as 'Buyer GSTIN' or associated with the buyer's details.\n"
     "- 'hsn_sac': Crucial for Indian invoices. "
-    "  - HSN (Harmonized System of Nomenclature) is for goods."
-    "  - SAC (Service Accounting Code) is for services."
-    "  - **ONLY extract the HSN/SAC code if it is explicitly mentioned on the invoice.** "
-    "  - It is typically a 4, 6, or 8-digit numeric code, sometimes alphanumeric."
-    "  - Look for labels like 'HSN Code', 'SAC Code', 'HSN/SAC', or just the code itself near item descriptions."
-    "  - If multiple HSN/SAC codes are present for different line items, extract the one that appears most prominently, or the first one listed. If only one is present for the whole invoice, use that."
-    "  - **If HSN/SAC is NOT found or explicitly stated, the value MUST be `null`. Do NOT guess or infer it.**\n"
+    "  - HSN (Harmonized System of Nomenclature) is for goods."
+    "  - SAC (Service Accounting Code) is for services."
+    "  - **ONLY extract the HSN/SAC code if it is explicitly mentioned on the invoice.** "
+    "  - It is typically a 4, 6, or 8-digit numeric code, sometimes alphanumeric."
+    "  - Look for labels like 'HSN Code', 'SAC Code', 'HSN/SAC', or just the code itself near item descriptions."
+    "  - If multiple HSN/SAC codes are present for different line items, extract the one that appears most prominently, or the first one listed. If only one is present for the whole invoice, use that."
+    "  - **If HSN/SAC is NOT found or explicitly stated, the value MUST be `null`. Do NOT guess or infer it.**\n"
     
     "- 'expense_ledger': Classify the nature of expense and suggest a suitable ledger type. "
-    "  Examples: 'Office Supplies', 'Professional Fees', 'Software Subscription', 'Rent', "
-    "  'Cloud Services', 'Google Cloud', 'AWS', 'Microsoft Azure', 'DigitalOcean', 'Marketing Expenses', 'Travel Expenses'. "
-    "  If the expense is clearly related to software licenses, subscriptions, or SaaS, classify as 'Software Subscription'."
-    "  Aim for a general and universal ledger type if a precise one isn't obvious from the invoice details."
-    "  **Consider common TDS sections and rates when determining expense type, e.g., 'Professional Fees' often implies TDS under Section 194J at 10%.**\n"
+    "  Examples: 'Office Supplies', 'Professional Fees', 'Software Subscription', 'Rent', "
+    "  'Cloud Services', 'Google Cloud', 'AWS', 'Microsoft Azure', 'DigitalOcean', 'Marketing Expenses', 'Travel Expenses'. "
+    "  If the expense is clearly related to software licenses, subscriptions, or SaaS, classify as 'Software Subscription'."
+    "  Aim for a general and universal ledger type if a precise one isn't obvious from the invoice details."
+    "  **Consider common TDS sections and rates when determining expense type, e.g., 'Professional Fees' often implies TDS under Section 194J at 10%.**\n"
     
     "- 'tds': Determine TDS applicability. This field should be a string indicating applicability and section. "
-    "  - If TDS is deducted, a TDS section is mentioned (e.g., 'TDS u/s 194J', 'TDS @10%'), state 'Yes - Section [X]' (e.g., 'Yes - Section 194J'). "
-    "  - **If a TDS rate or amount is present but no section is explicitly mentioned, infer the most common section based on expense (e.g., 194J for professional services), otherwise state 'Yes - Section Unknown'.**"
-    "  - If TDS is explicitly stated as 'Not Applicable' or no TDS details (amount, rate, section) are present and the invoice is clearly domestic, state 'No'."
-    "  - If unclear or implied but no explicit section/amount, state 'Uncertain'."
-    "  - **Crucially, if the buyer is explicitly stated as 'Foreign' or the 'Place of Supply' is outside India, then TDS is typically 'No'. Prefer 'No' in such cases.**\n"
+    "  - If TDS is deducted, a TDS section is mentioned (e.g., 'TDS u/s 194J', 'TDS @10%'), state 'Yes - Section [X]' (e.g., 'Yes - Section 194J'). "
+    "  - **If a TDS rate or amount is present but no section is explicitly mentioned, infer the most common section based on expense (e.g., 194J for professional services), otherwise state 'Yes - Section Unknown'.**"
+    "  - If TDS is explicitly stated as 'Not Applicable' or no TDS details (amount, rate, section) are present and the invoice is clearly domestic, state 'No'."
+    "  - If unclear or implied but no explicit section/amount, state 'Uncertain'."
+    "  - **Crucially, if the buyer is explicitly stated as 'Foreign' or the 'Place of Supply' is outside India, then TDS is typically 'No'. Prefer 'No' in such cases.**\n"
     "- 'tds_amount': Extract the exact numerical value of the TDS deducted from the invoice, if explicitly stated. If not stated, set to `null`.\n"
     "- 'tds_rate': Extract the numerical percentage rate of TDS deducted (e.g., '10' for 10%), if explicitly stated. "
-    "  **If a TDS Section is clearly identified but the rate is missing on the invoice, infer the standard rate for that section (e.g., 10% for 194J).** If not stated and not inferable from section, set to `null`.\n"
+    "  **If a TDS Section is clearly identified but the rate is missing on the invoice, infer the standard rate for that section (e.g., 10% for 194J).** If not stated and not inferable from section, set to `null`.\n"
     
     "- 'rcm_applicability': Determine Reverse Charge Mechanism (RCM) applicability. State 'Yes' if clearly applicable, 'No' if clearly not, or 'Uncertain' if unclear.\n"
 
     "- 'place_of_supply': Crucial for Indian invoices to determine IGST applicability. "
-    "  - **PRIORITY 1:** Look for a field explicitly labeled 'Place of Supply'. Extract the exact State/City name from this field (e.g., 'Delhi', 'Maharashtra')."
-    "  - **PRIORITY 2:** If 'Place of Supply' is not found, look for a 'Ship To:' address. Extract ONLY the State/City name from this address."
-    "  - **PRIORITY 3:** If 'Ship To:' is not found, look for a 'Bill To:' address. Extract ONLY the State/City name from this address."
-    "  - **PRIORITY 4:** If neither of the above, infer from the Customer/Buyer Address. Extract ONLY the State/City name from this address."
-    "  - **SPECIAL CASE:** If the invoice text or context clearly indicates an export or foreign transaction (e.g., 'Export Invoice', mentions 'Foreign' address, non-Indian currency as primary total, or foreign recipient details), set the value to 'Foreign'."
-    "  - **FALLBACK:** If none of the above are found or inferable, the value MUST be `null`."
+    "  - **PRIORITY 1:** Look for a field explicitly labeled 'Place of Supply'. Extract the exact State/City name from this field (e.g., 'Delhi', 'Maharashtra')."
+    "  - **PRIORITY 2:** If 'Place of Supply' is not found, look for a 'Ship To:' address. Extract ONLY the State/City name from this address."
+    "  - **PRIORITY 3:** If 'Ship To:' is not found, look for a 'Bill To:' address. Extract ONLY the State/City name from this address."
+    "  - **PRIORITY 4:** If neither of the above, infer from the Customer/Buyer Address. Extract ONLY the State/City name from this address."
+    "  - **SPECIAL CASE:** If the invoice text or context clearly indicates an export or foreign transaction (e.g., 'Export Invoice', mentions 'Foreign' address, non-Indian currency as primary total, or foreign recipient details), set the value to 'Foreign'."
+    "  - **FALLBACK:** If none of the above are found or inferable, the value MUST be `null`."
     
     "Return 'NOT AN INVOICE' if the document is clearly not an invoice.\n"
     "Ensure the JSON output is clean and directly parsable."
@@ -352,8 +352,7 @@ st.markdown("""
         font-family: 'Roboto', 'Helvetica Neue', Arial, sans-serif; 
     }
     .stAlert.info { 
-        background-color: #e0f2f7; 
-        /* The main color of the info text is now handled by the specific targets below */
+        background-color: #000000; /* Black background */
     }
     .stAlert.success { 
         background-color: #e8f5e9; 
@@ -372,7 +371,7 @@ st.markdown("""
     .stAlert.info p, 
     .stAlert.info li,
     .stAlert.info div { /* Also target generic div in case the list items are wrapped */
-        color: #1a1a1a !important; /* Very dark grey for strong contrast */
+        color: #FFFFFF !important; /* White text for strong contrast */
         font-weight: 500 !important; /* Make it a bit bolder */
         text-shadow: none !important; /* Remove any potential text shadow */
     }
