@@ -1,4 +1,4 @@
-import streamlit as st 
+import streamlit as st
 st.set_page_config(layout="wide")
 
 from PIL import Image
@@ -13,7 +13,7 @@ from openai import OpenAI
 import tempfile
 import os
 
-# Animations
+# Lottie Animations
 hello_lottie = "https://raw.githubusercontent.com/Mrpin2/InvoiceAi/refs/heads/main/Animation%20-%201749845212531.json"
 completed_lottie = "https://raw.githubusercontent.com/Mrpin2/InvoiceAi/refs/heads/main/Animation%20-%201749845303699.json"
 
@@ -32,8 +32,8 @@ if "files_uploaded" not in st.session_state:
     if hello_json:
         st_lottie(hello_json, height=200, key="hello")
 
-st.markdown("<h2 style='text-align: center;'>📄 AI Invoice Extractor (ChatGPT)</h2>", unsafe_allow_html=True)
-st.markdown("Upload scanned PDF invoices and extract clean finance data using ChatGPT Vision")
+st.markdown("<h2 style='text-align: center;'>📄 AI Invoice Extractor (OpenAI)</h2>", unsafe_allow_html=True)
+st.markdown("Upload scanned PDF invoices and extract structured finance data using GPT-4 Vision")
 st.markdown("---")
 
 columns = [
@@ -68,10 +68,22 @@ else:
 
 client = OpenAI(api_key=openai_api_key)
 
-main_prompt = """<same as previous long prompt>"""
-
-def is_placeholder_row(text):
-    return all(x.lower() in text.lower() for x in ["Vendor Name", "Invoice No", "Invoice Date", "Expense Ledger"])
+main_prompt = (
+    "Extract all relevant and clear information from the invoice, adhering to Indian standards "
+    "for dates (DD/MM/YYYY or DD-MM-YYYY) and codes (like GSTIN, HSN/SAC). "
+    "Accurately identify the total amount payable. Classify the nature of expense and suggest an "
+    "applicable ledger type (e.g., 'Office Supplies', 'Professional Fees', 'Software Subscription'). "
+    "Determine TDS applicability (e.g., 'Yes - Section 194J', 'No', 'Uncertain'). "
+    "Determine reverse charge GST (RCM) applicability (e.g., 'Yes', 'No', 'Uncertain'). "
+    "Handle missing data appropriately by setting fields to null or an empty string where "
+    "Optional, and raise an issue if critical data is missing for required fields. "
+    "Do not make assumptions or perform calculations beyond what's explicitly stated in the invoice text. "
+    "If a value is clearly zero, represent it as 0.0 for floats. For dates, prefer DD/MM/YYYY.\n"
+    "Return the following fields strictly as a comma-separated line in this order:"
+    "Vendor Name, Invoice No, GSTIN, HSN/SAC, Buyer Name, Place of Supply, Invoice Date, Expense Ledger, "
+    "GST Type, Tax Rate, Basic Amount, CGST, SGST, IGST, Total Payable, Narration, GST Input Eligible, "
+    "TDS Applicable, TDS Rate"
+)
 
 def convert_pdf_first_page(pdf_bytes):
     doc = fitz.open(stream=pdf_bytes, filetype="pdf")
@@ -88,13 +100,11 @@ if uploaded_files:
 
     for idx, file in enumerate(uploaded_files):
         file_name = file.name
-
         if file_name in st.session_state["processed_results"]:
             continue
 
         st.markdown(f"**Processing file: {file_name} ({idx+1}/{total_files})**")
         st.session_state["processing_status"][file_name] = "⏳ Pending..."
-        st.info(f"{file_name}: ⏳ Pending...")
 
         temp_file_path = None
         try:
@@ -105,7 +115,7 @@ if uploaded_files:
             pdf_data = open(temp_file_path, "rb").read()
             first_image = convert_pdf_first_page(pdf_data)
 
-            with st.spinner("🧠 Extracting data using ChatGPT..."):
+            with st.spinner("🧠 Extracting data using GPT-4 Vision..."):
                 img_buf = io.BytesIO()
                 first_image.save(img_buf, format="PNG")
                 img_buf.seek(0)
@@ -125,49 +135,11 @@ if uploaded_files:
                     max_tokens=1000
                 )
                 csv_line = response.choices[0].message.content.strip()
-
-                if csv_line.upper().startswith("NOT AN INVOICE") or is_placeholder_row(csv_line):
+                if csv_line.upper().startswith("NOT AN INVOICE"):
                     result_row = ["NOT AN INVOICE"] + ["-"] * (len(columns) - 1)
                 else:
-                    matched = False
-                    for line in csv_line.strip().split("\n"):
-                        try:
-                            row = [x.strip().strip('"') for x in line.split(",")]
-                            if len(row) >= len(columns):
-                                row = row[:len(columns)]
-                                narration = row[15].lower()
-                                full_text = narration + ' ' + ' '.join(row).lower()
-
-                                if row[7].strip().lower() in ["missing", "", "consulting"]:
-                                    if any(word in full_text for word in ["professional", "consulting", "advisory", "legal"]):
-                                        row[7] = "Professional Fees"
-                                    elif any(word in full_text for word in ["software", "subscription", "license"]):
-                                        row[7] = "Software Subscription"
-                                    elif any(word in full_text for word in ["marketing", "branding", "ads"]):
-                                        row[7] = "Marketing"
-                                    elif any(word in full_text for word in ["travel", "flight", "hotel"]):
-                                        row[7] = "Travel"
-
-                                if "194j" in full_text or "professional" in full_text:
-                                    row[17] = "Yes - Section 194J"
-                                    if not row[18].strip() or row[18].lower() == "missing":
-                                        row[18] = "10%"
-                                elif "194c" in full_text:
-                                    row[17] = "Yes - Section 194C"
-                                    if not row[18].strip() or row[18].lower() == "missing":
-                                        row[18] = "2%"
-                                elif "194h" in full_text:
-                                    row[17] = "Yes - Section 194H"
-                                    if not row[18].strip() or row[18].lower() == "missing":
-                                        row[18] = "5%"
-
-                                result_row = row
-                                matched = True
-                                break
-                        except Exception:
-                            pass
-                    if not matched:
-                        result_row = ["NOT AN INVOICE"] + ["-"] * (len(columns) - 1)
+                    row = [x.strip().strip('"') for x in csv_line.split(",")]
+                    result_row = row[:len(columns)] if len(row) >= len(columns) else row + ["-"] * (len(columns) - len(row))
 
                 st.session_state["processed_results"][file_name] = result_row
                 st.session_state["processing_status"][file_name] = "✅ Done"
@@ -192,25 +164,11 @@ if results:
 
     st.markdown("<h3 style='text-align: center;'>🎉 Yippie! All invoices processed with a smile 😊</h3>", unsafe_allow_html=True)
 
-    sanitized_results = []
-    for r in results:
-        if len(r) == len(columns):
-            sanitized_results.append(r)
-        elif len(r) == len(columns) + 1:
-            sanitized_results.append(r[1:])
-        elif len(r) < len(columns):
-            padded = r + ["-"] * (len(columns) - len(r))
-            sanitized_results.append(padded)
-        else:
-            sanitized_results.append(r[:len(columns)])
-
-    df = pd.DataFrame(sanitized_results, columns=columns)
+    df = pd.DataFrame(results, columns=columns)
     df.insert(0, "S. No", range(1, len(df) + 1))
+    st.dataframe(df)
 
-    display_columns = ["S. No"] + columns
-    st.dataframe(df[display_columns])
-
-    csv_data = df[display_columns].to_csv(index=False).encode("utf-8")
+    csv_data = df.to_csv(index=False).encode("utf-8")
     st.download_button("📥 Download Results as CSV", csv_data, "invoice_results.csv", "text/csv")
 
     st.markdown("---")
