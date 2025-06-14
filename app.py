@@ -14,6 +14,8 @@ import tempfile
 import os
 import locale
 import re
+from dateutil import parser
+import json
 
 locale.setlocale(locale.LC_ALL, '')
 
@@ -71,16 +73,6 @@ else:
 
 client = OpenAI(api_key=openai_api_key)
 
-main_prompt = (
-    "Extract structured information from this invoice with precision. "
-    "Use Indian formats for date (DD/MM/YYYY), ensure correct GST structure and TDS flags. "
-    "Return only values, not assumptions. Use null if unavailable. "
-    "Format response as comma-separated in this exact order: "
-    "Vendor Name, Invoice No, GSTIN, HSN/SAC, Buyer Name, Place of Supply, Invoice Date, Expense Ledger, "
-    "GST Type, Tax Rate, Basic Amount, CGST, SGST, IGST, Total Payable, Narration, GST Input Eligible, "
-    "TDS Applicable, TDS Rate"
-)
-
 def convert_pdf_first_page(pdf_bytes):
     doc = fitz.open(stream=pdf_bytes, filetype="pdf")
     page = doc.load_page(0)
@@ -107,6 +99,12 @@ def smart_tds_rate(section):
     if "194c" in section.lower(): return 2
     if "194h" in section.lower(): return 5
     return 0
+
+main_prompt = (
+    "Extract structured invoice data as a JSON object with keys: Vendor Name, Invoice No, GSTIN, HSN/SAC, Buyer Name, Place of Supply, "
+    "Invoice Date, Expense Ledger, GST Type, Tax Rate, Basic Amount, CGST, SGST, IGST, Total Payable, Narration, GST Input Eligible, TDS Applicable, TDS Rate."
+    "Use DD/MM/YYYY for dates. Use only values shown in the invoice. Return 'NOT AN INVOICE' if clearly not one."
+)
 
 uploaded_files = st.file_uploader("📤 Upload scanned invoice PDFs", type=["pdf"], accept_multiple_files=True)
 
@@ -151,32 +149,52 @@ if uploaded_files:
                     messages=chat_prompt,
                     max_tokens=1000
                 )
-                csv_line = response.choices[0].message.content.strip()
-                if csv_line.upper().startswith("NOT AN INVOICE") or "unable to extract" in csv_line.lower():
+
+                response_text = response.choices[0].message.content.strip()
+                if any(x in response_text.lower() for x in ["not an invoice", "i'm sorry", "unable to extract", "as an ai", "this appears to"]):
                     result_row = ["NOT AN INVOICE"] + ["-"] * (len(columns) - 1)
                 else:
-                    row = [x.strip().strip('"') for x in csv_line.split(",")]
-                    row += ["-"] * (len(columns) - len(row))
-                    row = row[:len(columns)]
+                    try:
+                        json_fields = columns
+                        raw_data = json.loads(response_text)
+                        row = [raw_data.get(field, "") for field in json_fields]
 
-                    if not is_valid_gstin(row[2]):
-                        row[2] = "MISSING"
+                        if not is_valid_gstin(row[2]):
+                            row[2] = "MISSING"
 
-                    narration_text = (
-                        f"Invoice {row[1]} dated {row[6]} was issued by {row[0]} (GSTIN: {row[2]}) "
-                        f"to {row[4]} (GSTIN: {row[4]}), with a total value of ₹{row[14]}. "
-                        f"Taxes applied - CGST: ₹{row[11] or '0.00'}, SGST: ₹{row[12] or '0.00'}, "
-                        f"IGST: ₹{row[13] or '0.00'}. Place of supply: {row[5]}. "
-                        f"Expense: {row[7]}. TDS: {row[17]}."
-                    )
-                    row[15] = narration_text
-                    result_row = row
+                        try:
+                            parsed_date = parser.parse(row[6], dayfirst=False)
+                            row[6] = parsed_date.strftime("%d/%m/%Y")
+                        except:
+                            row[6] = ""
+
+                        if len(row[7].strip()) < 3 or re.match(r"^\d{2}/\d{2}/\d{4}$", row[7]):
+                            row[7] = "MISSING"
+
+                        for i in [10, 11, 12, 13, 14]:
+                            if not re.match(r"^\d+(\.\d+)?$", str(row[i]).replace(",", "").replace("₹", "")):
+                                row[i] = "0"
+
+                        if "%" in str(row[9]):
+                            row[9] = str(row[9]).replace("%", "")
+
+                        narration_text = (
+                            f"Invoice {row[1]} dated {row[6]} was issued by {row[0]} (GSTIN: {row[2]}) "
+                            f"to {row[4]} (GSTIN: {row[4]}), with a total value of ₹{row[14]}. "
+                            f"Taxes applied - CGST: ₹{row[11] or '0.00'}, SGST: ₹{row[12] or '0.00'}, "
+                            f"IGST: ₹{row[13] or '0.00'}. " + (f"Place of supply: {row[5]}. " if row[5] else "") +
+                            f"Expense: {row[7]}. TDS: {row[17]}."
+                        )
+                        row[15] = narration_text
+                        result_row = row
+
+                    except:
+                        result_row = ["NOT AN INVOICE"] + ["-"] * (len(columns) - 1)
 
                 st.session_state["processed_results"][file_name] = result_row
                 st.session_state["processing_status"][file_name] = "✅ Done"
                 completed_count += 1
                 st.success(f"{file_name}: ✅ Done")
-                st.info(f"🤖 {completed_count} out of {total_files} files processed")
 
         except Exception as e:
             st.session_state["processed_results"][file_name] = ["NOT AN INVOICE"] + ["-"] * (len(columns) - 1)
@@ -214,6 +232,17 @@ if results:
 
     csv_data = df.to_csv(index=False).encode("utf-8")
     st.download_button("📥 Download Results as CSV", csv_data, "invoice_results.csv", "text/csv")
+
+    excel_buffer = io.BytesIO()
+    with pd.ExcelWriter(excel_buffer, engine='xlsxwriter') as writer:
+        df.to_excel(writer, index=False, sheet_name="Invoice Data")
+        writer.save()
+    st.download_button(
+        label="📥 Download Results as Excel",
+        data=excel_buffer.getvalue(),
+        file_name="invoice_results.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
 
     st.markdown("---")
     if st.session_state.summary_rows:
