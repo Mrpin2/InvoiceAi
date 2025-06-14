@@ -17,8 +17,12 @@ import re
 from dateutil import parser
 import json
 
+# Import Pydantic for data validation and structuring
+from pydantic import BaseModel, Field, ValidationError, validator
+from typing import Optional, Literal
+
 # Import Gemini API client
-import google.generativeai as genai 
+import google.generativeai as genai
 
 locale.setlocale(locale.LC_ALL, '')
 
@@ -119,6 +123,109 @@ except Exception as e:
     st.stop()
 
 
+# --- Pydantic Models for Data Validation ---
+
+class ExtractedInvoiceData(BaseModel):
+    invoice_number: Optional[str] = None
+    date: Optional[str] = None
+    seller_name: Optional[str] = None
+    buyer_name: Optional[str] = None
+    taxable_amount: Optional[float] = None
+    cgst: Optional[float] = None
+    sgst: Optional[float] = None
+    igst: Optional[float] = None
+    place_of_supply: Optional[str] = None
+    expense_ledger: Optional[str] = None
+    tds: Optional[str] = None
+    hsn_sac: Optional[str] = None
+
+    @validator('taxable_amount', 'cgst', 'sgst', 'igst', pre=True)
+    def clean_currency_fields(cls, v):
+        if v is None:
+            return 0.0
+        if isinstance(v, (int, float)):
+            return float(v)
+        if isinstance(v, str):
+            cleaned = v.replace(",", "").replace("₹", "").replace("$", "").strip()
+            try:
+                return float(cleaned)
+            except ValueError:
+                return 0.0
+        return 0.0
+
+    @validator('date', pre=True)
+    def parse_date_string(cls, v):
+        if v is None or not isinstance(v, str) or v.strip() == "":
+            return None
+        try:
+            parsed = parser.parse(v, dayfirst=True)
+            return parsed.strftime("%d/%m/%Y")
+        except Exception:
+            return None
+
+class ExtractedGSTINs(BaseModel):
+    seller_gstin: Optional[str] = None
+    buyer_gstin: Optional[str] = None
+
+    @validator('seller_gstin', 'buyer_gstin', pre=True)
+    def clean_gstin(cls, v):
+        if v is None:
+            return None
+        # Remove any non-alphanumeric characters and convert to uppercase
+        cleaned = re.sub(r'[^A-Z0-9]', '', str(v).upper())
+        return cleaned if is_valid_gstin(cleaned) else None # Validate against the existing function
+
+class ProcessedInvoiceResult(BaseModel):
+    file_name: str = Field(..., alias="File Name")
+    invoice_number: Optional[str] = Field(None, alias="Invoice Number")
+    date: Optional[str] = Field(None, alias="Date")
+    seller_name: Optional[str] = Field(None, alias="Seller Name")
+    seller_gstin: Optional[str] = Field(None, alias="Seller GSTIN")
+    hsn_sac: Optional[str] = Field(None, alias="HSN/SAC")
+    buyer_name: Optional[str] = Field(None, alias="Buyer Name")
+    buyer_gstin: Optional[str] = Field(None, alias="Buyer GSTIN")
+    expense_ledger: Optional[str] = Field(None, alias="Expense Ledger")
+    taxable_amount: float = Field(0.0, alias="Taxable Amount")
+    cgst: float = Field(0.0, alias="CGST")
+    sgst: float = Field(0.0, alias="SGST")
+    igst: float = Field(0.0, alias="IGST")
+    total_amount: float = Field(0.0, alias="Total Amount")
+    tds_applicability: Literal["Yes", "No", "Uncertain", "N/A"] = Field("Uncertain", alias="TDS Applicability")
+    tds_section: Optional[str] = Field(None, alias="TDS Section")
+    tds_rate: float = Field(0.0, alias="TDS Rate")
+    tds_amount: float = Field(0.0, alias="TDS Amount")
+    amount_payable: float = Field(0.0, alias="Amount Payable")
+    place_of_supply: Optional[str] = Field(None, alias="Place of Supply")
+    tds_raw: Optional[str] = Field(None, alias="TDS") # Store the raw TDS string from AI
+    narration: str = Field(..., alias="Narration")
+
+    # Calculated fields - ensure they are consistent
+    @validator('total_amount', always=True)
+    def calculate_total_amount(cls, v, values):
+        return values.get('taxable_amount', 0.0) + values.get('cgst', 0.0) + values.get('sgst', 0.0) + values.get('igst', 0.0)
+
+    @validator('tds_amount', always=True)
+    def calculate_tds_amount(cls, v, values):
+        taxable = values.get('taxable_amount', 0.0)
+        rate = values.get('tds_rate', 0.0)
+        return round(taxable * rate / 100, 2) if rate > 0 else 0.0
+
+    @validator('amount_payable', always=True)
+    def calculate_amount_payable(cls, v, values):
+        total = values.get('total_amount', 0.0)
+        tds = values.get('tds_amount', 0.0)
+        return total - tds
+
+    @validator('tds_applicability', always=True)
+    def set_tds_applicability(cls, v, values):
+        if values.get('place_of_supply', "").lower() == "foreign":
+            return "No"
+        elif values.get('tds_rate', 0.0) > 0 or values.get('tds_amount', 0.0) > 0:
+            return "Yes"
+        elif "no" in str(values.get('tds_raw', "")).lower():
+            return "No"
+        return "Uncertain"
+
 # --- Functions remain the same ---
 def convert_pdf_first_page(pdf_bytes):
     doc = fitz.open(stream=pdf_bytes, filetype="pdf")
@@ -129,6 +236,7 @@ def convert_pdf_first_page(pdf_bytes):
 
 def safe_float(x):
     try:
+        # Pydantic's validator will handle this, but keep for older paths or direct calls if needed
         cleaned = str(x).replace(",", "").replace("₹", "").replace("$", "").strip()
         return float(cleaned) if cleaned else 0.0
     except (ValueError, TypeError):
@@ -155,7 +263,7 @@ def is_valid_gstin(gstin):
 def extract_gstins_with_gemini(image_data):
     """
     Extracts all potential valid GSTINs from the provided image using the Gemini API.
-    Returns a dictionary with 'seller_gstin' and 'buyer_gstin' keys.
+    Returns an ExtractedGSTINs pydantic model.
     """
     prompt = (
         "You are an expert at identifying Indian GSTINs from images of invoices. "
@@ -172,30 +280,23 @@ def extract_gstins_with_gemini(image_data):
     )
     
     try:
-        image_part = {"mime_type": "image/png", "data": image_data}
+        # Pydantic's Image model expects a path or bytes, here we directly pass bytes from PIL
         response = gemini_model.generate_content([prompt, Image.open(io.BytesIO(image_data))])
         response_text = response.text.strip()
         
-        extracted_data = extract_json_from_response(response_text)
-        
-        seller_gstin = extracted_data.get('seller_gstin') if extracted_data else None
-        buyer_gstin = extracted_data.get('buyer_gstin') if extracted_data else None
-
-        # Validate extracted GSTINs with the existing is_valid_gstin function
-        final_seller_gstin = seller_gstin if is_valid_gstin(seller_gstin) else None
-        final_buyer_gstin = buyer_gstin if is_valid_gstin(buyer_gstin) else None
-
-        return {
-            'seller_gstin': final_seller_gstin,
-            'buyer_gstin': final_buyer_gstin
-        }
-
+        extracted_data_dict = extract_json_from_response(response_text)
+        if extracted_data_dict:
+            try:
+                # Use Pydantic to validate and clean the GSTINs
+                gstins = ExtractedGSTINs(**extracted_data_dict)
+                return gstins
+            except ValidationError as e:
+                st.warning(f"Gemini output validation failed for GSTINs: {e.errors()}")
+                return ExtractedGSTINs() # Return an empty model on validation failure
+        return ExtractedGSTINs() # Return empty model if no JSON extracted
     except Exception as e:
         st.warning(f"Gemini API call failed for GSTIN extraction: {e}")
-        return {
-            'seller_gstin': None,
-            'buyer_gstin': None
-        }
+        return ExtractedGSTINs() # Return empty model on API error
 
 def determine_tds_rate(expense_ledger, tds_str="", place_of_supply=""):
     if place_of_supply and place_of_supply.lower() == "foreign":
@@ -239,7 +340,10 @@ def extract_json_from_response(text):
         if start != -1 and end != -1:
             return json.loads(text[start:end+1])
         return json.loads(text) # In case the JSON is the entire response
-    except Exception:
+    except json.JSONDecodeError:
+        return None # Return None if not valid JSON
+    except Exception as e:
+        st.warning(f"Failed to extract JSON from response: {e}")
         return None
 
 main_prompt = (
@@ -363,11 +467,10 @@ if st.session_state["uploaded_files"] and st.session_state["process_triggered"]:
                 
             first_image = convert_pdf_first_page(pdf_data)
 
-            # Convert PIL Image to bytes for Gemini
+            # Convert PIL Image to bytes for Gemini and OpenAI
             img_buf = io.BytesIO()
             first_image.save(img_buf, format="PNG")
-            img_bytes = img_buf.getvalue() # Get bytes for Gemini
-
+            img_bytes = img_buf.getvalue() # Get bytes for both APIs
 
             with st.spinner(f"🧠 Extracting data from {file_name} using GPT-4 Vision..."):
                 base64_image = base64.b64encode(img_bytes).decode() # Use img_bytes for OpenAI
@@ -389,125 +492,114 @@ if st.session_state["uploaded_files"] and st.session_state["process_triggered"]:
                 )
 
                 response_text = response.choices[0].message.content.strip()
-                raw_data = extract_json_from_response(response_text)
+                extracted_data_dict = extract_json_from_response(response_text)
                 
-                if raw_data is None:
-                    if "not an invoice" in response_text.lower():
-                        result_row = {
-                            "File Name": file_name,
-                            "Invoice Number": "NOT AN INVOICE",
-                            "Date": "", "Seller Name": "", "Seller GSTIN": "",
-                            "HSN/SAC": "", "Buyer Name": "", "Buyer GSTIN": "",
-                            "Expense Ledger": "", "Taxable Amount": 0.0,
-                            "CGST": 0.0, "SGST": 0.0, "IGST": 0.0, "Total Amount": 0.0,
-                            "TDS Applicability": "N/A", "TDS Section": None,
-                            "TDS Rate": 0.0, "TDS Amount": 0.0, "Amount Payable": 0.0,
-                            "Place of Supply": "", "TDS": "",
-                            "Narration": "This document was identified as not an invoice."
-                        }
-                    else:
-                        st.warning(f"GPT returned non-JSON or unparsable response for {file_name}. See raw output below.")
-                        raise ValueError(f"GPT returned non-JSON response or unexpected format for {file_name}.")
+                invoice_data = None
+                if extracted_data_dict:
+                    try:
+                        invoice_data = ExtractedInvoiceData(**extracted_data_dict)
+                    except ValidationError as e:
+                        st.warning(f"Pydantic validation failed for GPT-4 Vision output for {file_name}: {e.errors()}")
+                        st.text_area(f"Raw GPT-4 Output ({file_name}) - Validation Error", response_text, height=200)
+                        # Proceed with partial data or mark as error later
+                        invoice_data = ExtractedInvoiceData(**{k: extracted_data_dict.get(k) for k in ExtractedInvoiceData.model_fields.keys() if k in extracted_data_dict})
+                
+                if invoice_data is None or (invoice_data.invoice_number is None and "not an invoice" in response_text.lower()):
+                    result_row_data = {
+                        "File Name": file_name,
+                        "Invoice Number": "NOT AN INVOICE",
+                        "Narration": "This document was identified as not an invoice."
+                    }
+                    result_row = ProcessedInvoiceResult(**result_row_data)
                 else:
-                    invoice_number = raw_data.get("invoice_number", "")
-                    date = raw_data.get("date", "")
-                    seller_name = raw_data.get("seller_name", "")
-                    hsn_sac = raw_data.get("hsn_sac", "")
-                    buyer_name = raw_data.get("buyer_name", "")
-                    expense_ledger = raw_data.get("expense_ledger", "")
-                    taxable_amount = safe_float(raw_data.get("taxable_amount", 0.0))
-                    cgst = safe_float(raw_data.get("cgst", 0.0))
-                    sgst = safe_float(raw_data.get("sgst", 0.0))
-                    igst = safe_float(raw_data.get("igst", 0.0))
-                    place_of_supply = raw_data.get("place_of_supply", "")
-                    tds_str = raw_data.get("tds", "")
-
                     # --- Gemini API for GSTIN extraction (sole source for GSTINs) ---
                     st.info(f"🔍 Extracting and validating GSTINs for {file_name} using Gemini...")
-                    gstin_data_from_gemini = extract_gstins_with_gemini(img_bytes)
+                    gstin_data_from_gemini: ExtractedGSTINs = extract_gstins_with_gemini(img_bytes)
                     
-                    seller_gstin = gstin_data_from_gemini['seller_gstin'] if gstin_data_from_gemini else None
-                    buyer_gstin = gstin_data_from_gemini['buyer_gstin'] if gstin_data_from_gemini else None
+                    seller_gstin = gstin_data_from_gemini.seller_gstin
+                    buyer_gstin = gstin_data_from_gemini.buyer_gstin
                     # --- End of Gemini API for GSTIN extraction ---
 
-
-                    total_amount = taxable_amount + cgst + sgst + igst
-                    tds_rate = determine_tds_rate(expense_ledger, tds_str, place_of_supply)
-                    tds_section = determine_tds_section(expense_ledger, place_of_supply)
-                    tds_amount = round(taxable_amount * tds_rate / 100, 2) if tds_rate > 0 else 0.0
-                    amount_payable = total_amount - tds_amount
-                    
-                    tds_applicability = "Uncertain"
-                    if place_of_supply and place_of_supply.lower() == "foreign":
-                        tds_applicability = "No"
-                    elif tds_rate > 0 or tds_amount > 0:
-                        tds_applicability = "Yes"
-                    elif "no" in str(tds_str).lower():
-                        tds_applicability = "No"
-
-                    try:
-                        parsed_date = parser.parse(str(date), dayfirst=True)
-                        date = parsed_date.strftime("%d/%m/%Y")
-                    except:
-                        date = ""
-                        
-                    buyer_gstin_display = buyer_gstin or "N/A"
-                    narration = (
-                        f"Invoice {invoice_number or 'N/A'} dated {date or 'N/A'} "
-                        f"was issued by {seller_name or 'N/A'} (GSTIN: {seller_gstin or 'N/A'}, HSN/SAC: {hsn_sac or 'N/A'}) "
-                        f"to {buyer_name or 'N/A'} (GSTIN: {buyer_gstin_display}), "
-                        f"with a taxable amount of ₹{taxable_amount:,.2f}. "
-                        f"Taxes applied - CGST: ₹{cgst:,.2f}, SGST: ₹{sgst:,.2f}, IGST: ₹{igst:,.2f}. "
-                        f"Total Amount: ₹{total_amount:,.2f}. "
-                        f"Place of Supply: {place_of_supply or 'N/A'}. Expense: {expense_ledger or 'N/A'}. "
-                        f"TDS: {tds_applicability} (Section: {tds_section or 'N/A'}) @ {tds_rate}% (₹{tds_amount:,.2f}). "
-                        f"Amount Payable: ₹{amount_payable:,.2f}."
+                    # Calculate derived fields for the final Pydantic model
+                    tds_rate = determine_tds_rate(
+                        invoice_data.expense_ledger,
+                        invoice_data.tds,
+                        invoice_data.place_of_supply
+                    )
+                    tds_section = determine_tds_section(
+                        invoice_data.expense_ledger,
+                        invoice_data.place_of_supply
                     )
                     
-                    result_row = {
+                    # Prepare dictionary for ProcessedInvoiceResult model
+                    result_row_data = {
                         "File Name": file_name,
-                        "Invoice Number": invoice_number,
-                        "Date": date,
-                        "Seller Name": seller_name,
-                        "Seller GSTIN": seller_gstin, # Now solely from Gemini
-                        "HSN/SAC": hsn_sac,
-                        "Buyer Name": buyer_name,
-                        "Buyer GSTIN": buyer_gstin, # Now solely from Gemini
-                        "Expense Ledger": expense_ledger,
-                        "Taxable Amount": taxable_amount,
-                        "CGST": cgst,
-                        "SGST": sgst,
-                        "IGST": igst,
-                        "Total Amount": total_amount,
-                        "TDS Applicability": tds_applicability,
-                        "TDS Section": tds_section,
+                        "Invoice Number": invoice_data.invoice_number,
+                        "Date": invoice_data.date,
+                        "Seller Name": invoice_data.seller_name,
+                        "Seller GSTIN": seller_gstin,
+                        "HSN/SAC": invoice_data.hsn_sac,
+                        "Buyer Name": invoice_data.buyer_name,
+                        "Buyer GSTIN": buyer_gstin,
+                        "Expense Ledger": invoice_data.expense_ledger,
+                        "Taxable Amount": invoice_data.taxable_amount,
+                        "CGST": invoice_data.cgst,
+                        "SGST": invoice_data.sgst,
+                        "IGST": invoice_data.igst,
+                        "Place of Supply": invoice_data.place_of_supply,
+                        "TDS": invoice_data.tds, # raw TDS string
                         "TDS Rate": tds_rate,
-                        "TDS Amount": tds_amount,
-                        "Amount Payable": amount_payable,
-                        "Place of Supply": place_of_supply,
-                        "TDS": tds_str,
-                        "Narration": narration
+                        "TDS Section": tds_section,
+                        # total_amount, tds_amount, amount_payable, tds_applicability are calculated by Pydantic validators
                     }
 
-                st.session_state["processed_results"][file_name] = result_row
-                st.session_state["processing_status"][file_name] = "✅ Done"
-                completed_count += 1
-                st.success(f"{file_name}: ✅ Done")
+                    # Create Narration
+                    buyer_gstin_display = buyer_gstin or "N/A"
+                    narration = (
+                        f"Invoice {invoice_data.invoice_number or 'N/A'} dated {invoice_data.date or 'N/A'} "
+                        f"was issued by {invoice_data.seller_name or 'N/A'} (GSTIN: {seller_gstin or 'N/A'}, HSN/SAC: {invoice_data.hsn_sac or 'N/A'}) "
+                        f"to {invoice_data.buyer_name or 'N/A'} (GSTIN: {buyer_gstin_display}), "
+                        f"with a taxable amount of ₹{invoice_data.taxable_amount or 0.0:,.2f}. "
+                        f"Taxes applied - CGST: ₹{invoice_data.cgst or 0.0:,.2f}, SGST: ₹{invoice_data.sgst or 0.0:,.2f}, IGST: ₹{invoice_data.igst or 0.0:,.2f}. "
+                        f"Place of Supply: {invoice_data.place_of_supply or 'N/A'}. Expense: {invoice_data.expense_ledger or 'N/A'}. "
+                    )
+                    # For narration, let's append TDS info after calculating with the Pydantic model
+                    # So, we'll assign narration after the model is created and calculated fields are available
+                    
+                    try:
+                        result_row = ProcessedInvoiceResult(**result_row_data)
+                        # Now that calculated fields are populated, finalize narration
+                        narration += (
+                            f"Total Amount: ₹{result_row.total_amount:,.2f}. "
+                            f"TDS: {result_row.tds_applicability} (Section: {result_row.tds_section or 'N/A'}) @ {result_row.tds_rate}% (₹{result_row.tds_amount:,.2f}). "
+                            f"Amount Payable: ₹{result_row.amount_payable:,.2f}."
+                        )
+                        result_row.narration = narration
+
+                    except ValidationError as e:
+                        st.error(f"Pydantic validation failed for final result for {file_name}: {e.errors()}")
+                        st.text_area(f"Final Result Data ({file_name}) - Validation Error", json.dumps(result_row_data, indent=2), height=200)
+                        # Fallback to an error row if final validation fails
+                        result_row_data["Invoice Number"] = "VALIDATION ERROR"
+                        result_row_data["Narration"] = f"Pydantic validation error for final data: {e.errors()}"
+                        result_row = ProcessedInvoiceResult(**result_row_data) # Create a partial/error model
+
+
+            # Store the result by converting the Pydantic model back to a dictionary
+            st.session_state["processed_results"][file_name] = result_row.model_dump(by_alias=True)
+            st.session_state["processing_status"][file_name] = "✅ Done"
+            completed_count += 1
+            st.success(f"{file_name}: ✅ Done")
 
         except Exception as e:
-            error_row = {
+            error_narration = f"Error processing file: {str(e)}. Raw response: {response_text if response_text else 'No response received from GPT.'}"
+            error_row_data = {
                 "File Name": file_name,
                 "Invoice Number": "PROCESSING ERROR",
-                "Date": "", "Seller Name": "", "Seller GSTIN": "",
-                "HSN/SAC": "", "Buyer Name": "", "Buyer GSTIN": "",
-                "Expense Ledger": "", "Taxable Amount": 0.0,
-                "CGST": 0.0, "SGST": 0.0, "IGST": 0.0, "Total Amount": 0.0,
-                "TDS Applicability": "Uncertain", "TDS Section": None,
-                "TDS Rate": 0.0, "TDS Amount": 0.0, "Amount Payable": 0.0,
-                "Place of Supply": "", "TDS": "",
-                "Narration": f"Error processing file: {str(e)}. Raw response: {response_text if response_text else 'No response received from GPT.'}"
+                "Narration": error_narration
             }
-            st.session_state["processed_results"][file_name] = error_row
+            error_row = ProcessedInvoiceResult(**error_row_data)
+            st.session_state["processed_results"][file_name] = error_row.model_dump(by_alias=True)
             st.session_state["processing_status"][file_name] = "❌ Error"
             st.error(f"❌ Error processing {file_name}: {e}")
             if response_text:
@@ -578,16 +670,18 @@ if results and st.session_state.get("process_triggered", False):
         )
 
         download_df = df.copy()
+        # Remove formatted currency columns before download, keep original numeric ones
         for original_col, display_col in currency_cols_mapping.items():
             if display_col in download_df.columns:
                 download_df = download_df.drop(columns=[display_col])
         if 'TDS Rate (%)' in download_df.columns:
             download_df = download_df.drop(columns=['TDS Rate (%)'])
         
+        # Ensure original numeric columns are available and reorder for download
         download_cols_ordered = [col for col in display_cols if col not in currency_cols_mapping.values() and col != 'TDS Rate (%)']
-        for col_name in ["Taxable Amount", "CGST", "SGST", "IGST", "Total Amount", "TDS Amount", "Amount Payable", "TDS Rate"]:
-            if col_name in df.columns and col_name not in download_cols_ordered:
-                    download_cols_ordered.append(col_name)
+        for col_name in ["Taxable Amount", "CGST", "SGST", "IGST", "Total Amount", "TDS Amount", "Amount Payable", "TDS Rate", "TDS"]:
+            if col_name in download_df.columns and col_name not in download_cols_ordered:
+                download_cols_ordered.append(col_name)
 
         csv_data = download_df[download_cols_ordered].to_csv(index=False).encode("utf-8")
         st.download_button("📥 Download Results as CSV", csv_data, "invoice_results.csv", "text/csv")
@@ -610,6 +704,7 @@ if results and st.session_state.get("process_triggered", False):
         st.write("Raw results data for debugging:")
         st.json(results)
 
+    # Check for TDS applicability in the DataFrame that's actually displayed/processed
     if 'TDS Applicability' in df.columns and any(df['TDS Applicability'] == "Yes"):
         st.balloons()
     elif completed_count == total_files and completed_count > 0:
@@ -620,3 +715,4 @@ else:
         st.info("Upload one or more scanned invoices to get started.")
     elif st.session_state.get("uploaded_files") and not st.session_state.get("process_triggered", False):
         st.info("Files uploaded. Click 'Process Invoices' to start extraction.")
+    
