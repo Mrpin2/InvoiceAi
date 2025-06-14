@@ -1,3 +1,4 @@
+```python
 import streamlit as st
 from pydantic import BaseModel, Field
 from typing import List, Optional, Union
@@ -115,7 +116,7 @@ main_prompt = (
     "Your task is to extract information into a JSON object with the following keys. "
     "If a key's value is not explicitly present or derivable from the invoice, use `null` for that value. "
     "Keys to extract: invoice_number, date, gstin (seller's GSTIN), seller_name, buyer_name, buyer_gstin, "
-    "taxable_amount, cgst, sgst, igst, total_amount_payable, tds_amount, tds_rate, place_of_supply, expense_ledger, tds, hsn_sac, rcm_applicability. " # Added tds_rate
+    "taxable_amount, cgst, sgst, igst, total_amount_payable, tds_amount, tds_rate, place_of_supply, expense_ledger, tds, hsn_sac, rcm_applicability. "
     "You MUST include an empty list `[]` for `line_items` if no line items are found, do not use `null` for `line_items`. "
     "For `line_items`, each item must have 'description', 'quantity', 'gross_worth'.\n\n"
     
@@ -139,16 +140,18 @@ main_prompt = (
     "  Examples: 'Office Supplies', 'Professional Fees', 'Software Subscription', 'Rent', "
     "  'Cloud Services', 'Google Cloud', 'AWS', 'Microsoft Azure', 'DigitalOcean', 'Marketing Expenses', 'Travel Expenses'. "
     "  If the expense is clearly related to software licenses, subscriptions, or SaaS, classify as 'Software Subscription'."
-    "  Aim for a general and universal ledger type if a precise one isn't obvious from the invoice details.\n"
+    "  Aim for a general and universal ledger type if a precise one isn't obvious from the invoice details."
+    "  **Consider common TDS sections and rates when determining expense type, e.g., 'Professional Fees' often implies TDS under Section 194J at 10%.**\n"
     
     "- 'tds': Determine TDS applicability. This field should be a string indicating applicability and section. "
     "  - If TDS is deducted, a TDS section is mentioned (e.g., 'TDS u/s 194J', 'TDS @10%'), state 'Yes - Section [X]' (e.g., 'Yes - Section 194J'). "
-    "  - **If a TDS rate or amount is present but no section is explicitly mentioned, infer the most common section if possible, otherwise state 'Yes - Section Unknown'.**"
+    "  - **If a TDS rate or amount is present but no section is explicitly mentioned, infer the most common section based on expense (e.g., 194J for professional services), otherwise state 'Yes - Section Unknown'.**"
     "  - If TDS is explicitly stated as 'Not Applicable' or no TDS details (amount, rate, section) are present and the invoice is clearly domestic, state 'No'."
     "  - If unclear or implied but no explicit section/amount, state 'Uncertain'."
     "  - **Crucially, if the buyer is explicitly stated as 'Foreign' or the 'Place of Supply' is outside India, then TDS is typically 'No'. Prefer 'No' in such cases.**\n"
     "- 'tds_amount': Extract the exact numerical value of the TDS deducted from the invoice, if explicitly stated. If not stated, set to `null`.\n"
-    "- 'tds_rate': Extract the numerical percentage rate of TDS deducted (e.g., '10' for 10%), if explicitly stated. If not stated, set to `null`.\n"
+    "- 'tds_rate': Extract the numerical percentage rate of TDS deducted (e.g., '10' for 10%), if explicitly stated. "
+    "  **If a TDS Section is clearly identified but the rate is missing on the invoice, infer the standard rate for that section (e.g., 10% for 194J).** If not stated and not inferable from section, set to `null`.\n"
     
     "- 'rcm_applicability': Determine Reverse Charge Mechanism (RCM) applicability. State 'Yes' if clearly applicable, 'No' if clearly not, or 'Uncertain' if unclear.\n"
 
@@ -310,19 +313,23 @@ def extract_from_openai(
 # --- Streamlit App UI ---
 st.set_page_config(layout="wide", page_title="📄 AI Invoice Extractor")
 
-# Custom CSS for a bit more flair
+# Custom CSS for a bit more flair and font consistency
 st.markdown("""
 <style>
-    .stApp { background-color: #f0f2f6; color: #333333; }
-    h1, h2, h3 { color: #1e3a8a; }
+    body {
+        font-family: 'Roboto', 'Helvetica Neue', Arial, sans-serif; /* Add popular sans-serif fonts */
+    }
+    .stApp { background-color: #f0f2f6; color: #333333; font-family: 'Roboto', 'Helvetica Neue', Arial, sans-serif; }
+    h1, h2, h3 { color: #1e3a8a; font-family: 'Roboto', 'Helvetica Neue', Arial, sans-serif; }
     .stButton>button {
         background-color: #3b82f6; color: white; border-radius: 8px;
         padding: 10px 20px; font-size: 16px; font-weight: bold;
         transition: background-color 0.3s ease;
+        font-family: 'Roboto', 'Helvetica Neue', Arial, sans-serif;
     }
     .stButton>button:hover { background-color: #2563eb; }
-    .stMarkdown p { font-size: 1.05em; line-height: 1.6; }
-    .stAlert { border-radius: 8px; }
+    .stMarkdown p { font-size: 1.05em; line-height: 1.6; font-family: 'Roboto', 'Helvetica Neue', Arial, sans-serif; }
+    .stAlert { border-radius: 8px; font-family: 'Roboto', 'Helvetica Neue', Arial, sans-serif; }
     .stAlert.info { background-color: #e0f2f7; color: #0288d1; }
     .stAlert.success { background-color: #e8f5e9; color: #2e7d32; }
     .stAlert.error { background-color: #ffebee; color: #c62828; }
@@ -413,6 +420,7 @@ else: # Default behavior: user must enter keys manually
 st.info(
     "**Instructions:**\n"
     f"1. Select your preferred AI model ({model_choice}) in the sidebar.\n"
+    "   💡 **Recommendation:** Use **Google Gemini** for **scanned or blurred documents**, and **OpenAI GPT** for **system-generated (clear) PDF invoices**.\n" # Updated recommendation
     "2. If you know the admin password, enter it to use pre-configured API keys from `Streamlit Secrets`.\n"
     "3. Upload one or more PDF invoice files.\n"
     "4. Click 'Process Invoices' to extract data.\n"
@@ -515,11 +523,12 @@ if st.button("🚀 Process Invoices", type="primary"):
                         gross_total_incl_tax = extracted_data.total_amount_payable if extracted_data.total_amount_payable is not None else 0.0
                         
                         tds_amount_extracted = extracted_data.tds_amount if extracted_data.tds_amount is not None else 0.0
-                        tds_rate_extracted = extracted_data.tds_rate if extracted_data.tds_rate is not None else "N/A" # Get TDS Rate
-                        tds_display = extracted_data.tds or "N/A" # Applicability string (e.g., "Yes - 194J")
+                        tds_rate_extracted = extracted_data.tds_rate if extracted_data.tds_rate is not None else "N/A"
+                        tds_display = extracted_data.tds or "N/A" # Applicability string (e.g., "Yes - Section 194J")
                         pos = extracted_data.place_of_supply or "N/A"
+                        expense_ledger_display = extracted_data.expense_ledger or "N/A"
 
-                        # --- Logic for TDS Section ---
+                        # --- Logic for TDS Section Extraction and Rate Inference ---
                         tds_section_display = "N/A"
                         if isinstance(tds_display, str) and "section" in tds_display.lower():
                             # Attempt to extract section number
@@ -530,7 +539,15 @@ if st.button("🚀 Process Invoices", type="primary"):
                                 section_part = section_part.split(' ')[0].split(']')[0].split('.')[0].strip()
                                 if section_part:
                                     tds_section_display = section_part
-                        # --- End Logic for TDS Section ---
+                        
+                        # New: Infer TDS rate if section is known and rate is missing
+                        if tds_rate_extracted == "N/A" and tds_section_display != "N/A":
+                            # Simple, limited lookup for common sections
+                            if tds_section_display == "194J":
+                                tds_rate_extracted = 10.0 # Standard rate for professional fees
+                            # Add more sections here if needed for specific inferences
+                            
+                        # --- End Logic for TDS Section Extraction and Rate Inference ---
 
 
                         # --- Adjust TDS if Buyer is Foreign or TDS is explicitly "No" ---
@@ -552,7 +569,7 @@ if st.button("🚀 Process Invoices", type="primary"):
                         seller_gstin_display = extracted_data.gstin or "N/A"
                         buyer_name_display = extracted_data.buyer_name or "N/A"
                         buyer_gstin_display = extracted_data.buyer_gstin or "N/A"
-                        expense_ledger_display = extracted_data.expense_ledger or "N/A"
+                        # expense_ledger_display already assigned above
                         hsn_sac_display = extracted_data.hsn_sac or "N/A"
                         rcm_display = extracted_data.rcm_applicability or "N/A"
 
@@ -561,7 +578,7 @@ if st.button("🚀 Process Invoices", type="primary"):
                             f"from **{seller_name_display}** (GSTIN: {seller_gstin_display}) "
                             f"to **{buyer_name_display}** (Buyer GSTIN: {buyer_gstin_display}), "
                             f"Taxable: **{format_currency(taxable_amount)}**, Gross Total (Incl Tax): **{format_currency(gross_total_incl_tax)}**, "
-                            f"TDS Deducted: **{format_currency(tds_amount_extracted)}** (Rate: {tds_rate_extracted}% Section: {tds_section_display}), Net Payable: **{format_currency(total_payable_after_tds)}**. "
+                            f"TDS Deducted: **{format_currency(tds_amount_extracted)}** (Rate: {tds_rate_extracted}{'%' if isinstance(tds_rate_extracted, (int, float)) else ''} Section: {tds_section_display}). Net Payable: **{format_currency(total_payable_after_tds)}**. "
                             f"Taxes: CGST {format_currency(cgst)}, SGST {format_currency(sgst)}, IGST {format_currency(igst)}. "
                             f"Place of Supply: {pos}. Expense Ledger: {expense_ledger_display}. "
                             f"RCM: {rcm_display}. HSN/SAC: {hsn_sac_display}."
@@ -584,7 +601,7 @@ if st.button("🚀 Process Invoices", type="primary"):
                             "IGST": igst,
                             "TDS Rate": tds_rate_extracted,
                             "TDS Amount": tds_amount_extracted,
-                            "TDS Section (By determining expense)": tds_section_display,
+                            "TDS Section": tds_section_display, # Renamed key
                             "Narration": narration,
                             "Gross Total (Incl Tax)": gross_total_incl_tax, # Keep for backend calculation/Excel
                             "R. Applicability": rcm_display, # Keep for Excel
@@ -664,7 +681,7 @@ if st.session_state.summary_rows:
         "IGST",
         "TDS Rate",
         "TDS Amount",
-        "TDS Section (By determining expense)",
+        "TDS Section", # Renamed in display
         "Narration",
     ]
 
@@ -694,7 +711,7 @@ if st.session_state.summary_rows:
             "IGST",
             "TDS Rate",
             "TDS Amount",
-            "TDS Section (By determining expense)",
+            "TDS Section", # Renamed in Excel
             "Narration",
             "Gross Total (Incl Tax)", # Keeping this for Excel as it's a useful derived value
             "R. Applicability", # Keeping this for Excel
@@ -714,3 +731,5 @@ if st.session_state.summary_rows:
     )
 elif not uploaded_files:
      st.info("Upload PDF files and click 'Process Invoices' to see results.")
+
+```
