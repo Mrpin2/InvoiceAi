@@ -363,11 +363,37 @@ st.markdown("""
     .stProgress > div > div > div > div { 
         background-color: #3b82f6 !important; 
     }
+    /* NEW CSS for card-like effects and overall spacing */
+    .main .block-container {
+        padding-top: 3rem; /* Increase top padding for entire main content area */
+        padding-right: 3rem;
+        padding-left: 3rem;
+        padding-bottom: 3rem;
+    }
+    /* Card-like effect for the instruction markdown block */
+    div[data-testid="stMarkdownContainer"]:has(p:first-child:contains("Instructions:")) {
+        background-color: white;
+        padding: 25px; /* Increased padding for better look */
+        border-radius: 12px;
+        box-shadow: 0 4px 10px rgba(0, 0, 0, 0.08); /* Stronger subtle shadow */
+        margin-bottom: 25px; /* Space below this card */
+        border: 1px solid #e0e0e0; /* Light border */
+    }
+    /* Card-like effect for the dataframes */
+    div[data-testid="stDataFrame"] {
+        background-color: white;
+        padding: 20px;
+        border-radius: 12px;
+        box-shadow: 0 4px 10px rgba(0, 0, 0, 0.08);
+        margin-bottom: 20px;
+        border: 1px solid #e0e0e0;
+    }
 </style>
 """, unsafe_allow_html=True)
 
 
 st.title("📄 AI Invoice Extractor (Multi-Model Powered)")
+st.divider() # New: Divider after title
 
 st.sidebar.header("Configuration")
 
@@ -459,11 +485,15 @@ st.markdown(
     """
 )
 
+st.divider() # New: Divider before file uploader and process button
+
 uploaded_files = st.file_uploader(
     "Choose PDF invoice files",
     type="pdf",
     accept_multiple_files=True
 )
+
+st.markdown("&nbsp;") # Small vertical space
 
 if 'summary_rows' not in st.session_state:
     st.session_state.summary_rows = []
@@ -519,7 +549,7 @@ if st.button("🚀 Process Invoices", type="primary"):
             total_files = len(uploaded_files)
 
             for i, uploaded_file_obj in enumerate(uploaded_files):
-                st.markdown(f"---")
+                st.markdown(f"---") # Small divider between files
                 # This st.info will retain default Streamlit styling (blue box)
                 st.info(f"Processing file: **{uploaded_file_obj.name}** ({i+1}/{total_files}) using **{model_choice}**...")
                 temp_file_path = None
@@ -677,6 +707,7 @@ if st.button("🚀 Process Invoices", type="primary"):
 
 
 if st.session_state.summary_rows:
+    st.divider() # New: Divider before consolidated summary
     st.subheader("📊 Consolidated Extracted Invoice Summary")
     
     # Create the DataFrame from summary_rows
