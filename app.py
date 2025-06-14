@@ -156,7 +156,7 @@ if uploaded_files:
                     json_fields = columns
                     raw_data = json.loads(response_text)
                     row = [raw_data.get(field, "") for field in json_fields]
-    row += ["INR"]  # Default currency
+                    row += ["INR"]  # Default currency
 
                     if not is_valid_gstin(row[2]):
                         row[2] = "MISSING"
