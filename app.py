@@ -141,6 +141,19 @@ if uploaded_files:
                     row = [x.strip().strip('"') for x in csv_line.split(",")]
                     result_row = row[:len(columns)] if len(row) >= len(columns) else row + ["-"] * (len(columns) - len(row))
 
+                    # Smart narration
+                    try:
+                        narration_text = (
+                            f"Invoice {result_row[1]} dated {result_row[6]} was issued by {result_row[0]} (GSTIN: {result_row[2]}) "
+                            f"to {result_row[4]} (GSTIN: {result_row[4]}), with a total value of ₹{result_row[14]}. "
+                            f"Taxes applied - CGST: ₹{result_row[11] or '0.00'}, SGST: ₹{result_row[12] or '0.00'}, "
+                            f"IGST: ₹{result_row[13] or '0.00'}. Place of supply: {result_row[5]}. "
+                            f"Expense: {result_row[7]}. TDS: {result_row[17]}."
+                        )
+                        result_row[15] = narration_text
+                    except Exception:
+                        pass
+
                 st.session_state["processed_results"][file_name] = result_row
                 st.session_state["processing_status"][file_name] = "✅ Done"
                 completed_count += 1
@@ -166,6 +179,17 @@ if results:
 
     df = pd.DataFrame(results, columns=columns)
     df.insert(0, "S. No", range(1, len(df) + 1))
+
+    # Add calculated columns
+    df["TDS Amount"] = df.apply(lambda row: round(float(row["Basic Amount"]) * 0.10, 2) if "194j" in str(row["TDS Applicable"]).lower() else 0.0, axis=1)
+    df["Gross Amount"] = df.apply(lambda row: sum([
+        float(row["Basic Amount"] or 0),
+        float(row["CGST"] or 0),
+        float(row["SGST"] or 0),
+        float(row["IGST"] or 0)
+    ]), axis=1)
+    df["Net Payable"] = df["Gross Amount"] - df["TDS Amount"]
+
     st.dataframe(df)
 
     csv_data = df.to_csv(index=False).encode("utf-8")
