@@ -44,7 +44,7 @@ st.markdown("---")
 # Define the fields we want to extract (matching the Gemini example structure)
 fields = [
     "invoice_number", "date", "gstin", "seller_name", "buyer_name", "buyer_gstin",
-    "total_gross_worth", "cgst", "sgst", "igst", "place_of_supply", "expense_ledger", "tds"
+    "taxable_amount", "cgst", "sgst", "igst", "place_of_supply", "expense_ledger", "tds"
 ]
 
 if "processed_results" not in st.session_state:
@@ -97,6 +97,62 @@ def is_valid_gstin(gstin):
         return False
     return bool(re.match(r"^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z]{1}[1-9A-Z]{1}[Z]{1}[0-9A-Z]{1}$", gstin))
 
+def determine_tds_rate(expense_ledger, tds_str=""):
+    """
+    Determine TDS rate based on expense ledger and TDS string
+    Common TDS rates in India:
+      - Professional services: 10% (Section 194J)
+      - Contracts: 1-2% (Section 194C)
+      - Commission/brokerage: 5% (Section 194H)
+      - Rent: 10% (Section 194I)
+      - Advertising: 1% (Section 194Q)
+      - Default: 0% (no TDS)
+    """
+    # First check if TDS string contains a specific rate
+    if tds_str and isinstance(tds_str, str):
+        # Look for percentage in the TDS string
+        match = re.search(r'(\d+(\.\d+)?)%', tds_str)
+        if match:
+            return float(match.group(1))
+        
+        # Check for TDS sections
+        section_rates = {
+            "194j": 10.0,  # Professional services
+            "194c": 2.0,   # Contracts
+            "194h": 5.0,   # Commission/brokerage
+            "194i": 10.0,  # Rent
+            "194q": 1.0    # Advertising
+        }
+        for section, rate in section_rates.items():
+            if section in tds_str.lower():
+                return rate
+    
+    # If no TDS string info, determine by expense ledger
+    expense_ledger = expense_ledger.lower() if expense_ledger else ""
+    
+    # Professional services - 10%
+    if "professional" in expense_ledger or "consultancy" in expense_ledger or "service" in expense_ledger:
+        return 10.0
+    
+    # Contract work - 2%
+    if "contract" in expense_ledger or "sub-contract" in expense_ledger or "work" in expense_ledger:
+        return 2.0
+    
+    # Commission, brokerage - 5%
+    if "commission" in expense_ledger or "brokerage" in expense_ledger:
+        return 5.0
+    
+    # Rent - 10%
+    if "rent" in expense_ledger:
+        return 10.0
+    
+    # Advertisement - 1%
+    if "advertis" in expense_ledger or "marketing" in expense_ledger:
+        return 1.0
+    
+    # Default to 0 if not applicable
+    return 0.0
+
 def extract_json_from_response(text):
     """Try to extract JSON from GPT response which might have extra text"""
     try:
@@ -120,7 +176,8 @@ def extract_json_from_response(text):
 main_prompt = (
     "Extract structured invoice data as a JSON object with the following keys: "
     "invoice_number, date, gstin, seller_name, buyer_name, buyer_gstin, "
-    "total_gross_worth, cgst, sgst, igst, place_of_supply, expense_ledger, tds. "
+    "taxable_amount, cgst, sgst, igst, place_of_supply, expense_ledger, tds. "
+    "Important: 'taxable_amount' is the amount BEFORE taxes. "
     "Use DD/MM/YYYY for dates. Use only values shown in the invoice. "
     "Return 'NOT AN INVOICE' if clearly not one. "
     "If a value is not available, use null. "
@@ -172,7 +229,7 @@ if uploaded_files:
                 response = client.chat.completions.create(
                     model="gpt-4o",
                     messages=chat_prompt,
-                    max_tokens=1000
+                    max_tokens=1200
                 )
 
                 response_text = response.choices[0].message.content.strip()
@@ -190,10 +247,14 @@ if uploaded_files:
                             "Seller GSTIN": "",
                             "Buyer Name": "",
                             "Buyer GSTIN": "",
-                            "Total Gross Worth": 0.0,
+                            "Taxable Amount": 0.0,
                             "CGST": 0.0,
                             "SGST": 0.0,
                             "IGST": 0.0,
+                            "Total Amount": 0.0,
+                            "TDS Rate": 0.0,
+                            "TDS Amount": 0.0,
+                            "Amount Payable": 0.0,
                             "Place of Supply": "",
                             "Expense Ledger": "",
                             "TDS": "",
@@ -209,13 +270,19 @@ if uploaded_files:
                     seller_gstin = raw_data.get("gstin", "")
                     buyer_name = raw_data.get("buyer_name", "")
                     buyer_gstin = raw_data.get("buyer_gstin", "")
-                    total_gross_worth = safe_float(raw_data.get("total_gross_worth", 0.0))
+                    taxable_amount = safe_float(raw_data.get("taxable_amount", 0.0))
                     cgst = safe_float(raw_data.get("cgst", 0.0))
                     sgst = safe_float(raw_data.get("sgst", 0.0))
                     igst = safe_float(raw_data.get("igst", 0.0))
                     place_of_supply = raw_data.get("place_of_supply", "")
                     expense_ledger = raw_data.get("expense_ledger", "")
-                    tds = raw_data.get("tds", "")
+                    tds_str = raw_data.get("tds", "")
+                    
+                    # Calculate derived fields
+                    total_amount = taxable_amount + cgst + sgst + igst
+                    tds_rate = determine_tds_rate(expense_ledger, tds_str)
+                    tds_amount = round(taxable_amount * tds_rate / 100, 2)
+                    amount_payable = total_amount - tds_amount
                     
                     # Validate and clean GSTIN
                     if not is_valid_gstin(seller_gstin):
@@ -228,16 +295,18 @@ if uploaded_files:
                     except:
                         date = ""
                     
-                    # Create narration text (matching Gemini example format)
+                    # Create narration text
                     buyer_gstin_display = buyer_gstin or "N/A"
                     narration = (
                         f"Invoice {invoice_number} dated {date} "
                         f"was issued by {seller_name} (GSTIN: {seller_gstin}) "
                         f"to {buyer_name} (GSTIN: {buyer_gstin_display}), "
-                        f"with a total value of ₹{total_gross_worth:.2f}. "
-                        f"Taxes applied - CGST: ₹{cgst:.2f}, SGST: ₹{sgst:.2f}, IGST: ₹{igst:.2f}. "
+                        f"with a taxable amount of ₹{taxable_amount:,.2f}. "
+                        f"Taxes applied - CGST: ₹{cgst:,.2f}, SGST: ₹{sgst:,.2f}, IGST: ₹{igst:,.2f}. "
+                        f"Total Amount: ₹{total_amount:,.2f}. "
                         f"Place of supply: {place_of_supply or 'N/A'}. Expense: {expense_ledger or 'N/A'}. "
-                        f"TDS: {tds or 'N/A'}."
+                        f"TDS: {tds_str or 'N/A'} @ {tds_rate}% (₹{tds_amount:,.2f}). "
+                        f"Amount Payable: ₹{amount_payable:,.2f}."
                     )
                     
                     result_row = {
@@ -248,13 +317,17 @@ if uploaded_files:
                         "Seller GSTIN": seller_gstin,
                         "Buyer Name": buyer_name,
                         "Buyer GSTIN": buyer_gstin,
-                        "Total Gross Worth": total_gross_worth,
+                        "Taxable Amount": taxable_amount,
                         "CGST": cgst,
                         "SGST": sgst,
                         "IGST": igst,
+                        "Total Amount": total_amount,
+                        "TDS Rate": tds_rate,
+                        "TDS Amount": tds_amount,
+                        "Amount Payable": amount_payable,
                         "Place of Supply": place_of_supply,
                         "Expense Ledger": expense_ledger,
-                        "TDS": tds,
+                        "TDS": tds_str,
                         "Narration": narration
                     }
 
@@ -272,10 +345,14 @@ if uploaded_files:
                 "Seller GSTIN": "",
                 "Buyer Name": "",
                 "Buyer GSTIN": "",
-                "Total Gross Worth": 0.0,
+                "Taxable Amount": 0.0,
                 "CGST": 0.0,
                 "SGST": 0.0,
                 "IGST": 0.0,
+                "Total Amount": 0.0,
+                "TDS Rate": 0.0,
+                "TDS Amount": 0.0,
+                "Amount Payable": 0.0,
                 "Place of Supply": "",
                 "Expense Ledger": "",
                 "TDS": "",
@@ -304,15 +381,20 @@ if results:
         df = pd.DataFrame(results)
         
         # Format currency columns
-        currency_cols = ["Total Gross Worth", "CGST", "SGST", "IGST"]
+        currency_cols = ["Taxable Amount", "CGST", "SGST", "IGST", "Total Amount", "TDS Amount", "Amount Payable"]
         for col in currency_cols:
             df[f"{col} (₹)"] = df[col].apply(format_currency)
+        
+        # Format TDS Rate as percentage
+        df["TDS Rate (%)"] = df["TDS Rate"].apply(lambda x: f"{x}%")
         
         # Reorder columns for better display
         display_cols = [
             "File Name", "Invoice Number", "Date", "Seller Name", "Seller GSTIN",
-            "Buyer Name", "Buyer GSTIN", "Total Gross Worth (₹)", "CGST (₹)", 
-            "SGST (₹)", "IGST (₹)", "Place of Supply", "Expense Ledger", "TDS", "Narration"
+            "Buyer Name", "Buyer GSTIN", "Taxable Amount (₹)", "CGST (₹)", 
+            "SGST (₹)", "IGST (₹)", "Total Amount (₹)", "TDS Rate (%)", 
+            "TDS Amount (₹)", "Amount Payable (₹)", "Place of Supply", 
+            "Expense Ledger", "TDS", "Narration"
         ]
         
         st.dataframe(df[display_cols])
