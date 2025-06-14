@@ -102,7 +102,7 @@ def smart_tds_rate(section):
 
 main_prompt = (
     "Extract structured invoice data as a JSON object with keys: Vendor Name, Invoice No, GSTIN, HSN/SAC, Buyer Name, Place of Supply, "
-    "Invoice Date, Expense Ledger, GST Type, Tax Rate, Basic Amount, CGST, SGST, IGST, Total Payable, Narration, GST Input Eligible, TDS Applicable, TDS Rate."
+    "Invoice Date, Expense Ledger, GST Type, Tax Rate, Basic Amount, CGST, SGST, IGST, Total Payable, Narration, GST Input Eligible, TDS Applicable, TDS Rate. "
     "Use DD/MM/YYYY for dates. Use only values shown in the invoice. Return 'NOT AN INVOICE' if clearly not one."
 )
 
@@ -151,51 +151,46 @@ if uploaded_files:
                 )
 
                 response_text = response.choices[0].message.content.strip()
-try:
-    json_fields = columns
-    raw_data = json.loads(response_text)
-    row = [raw_data.get(field, "") for field in json_fields]
-                    result_row = ["NOT AN INVOICE"] + ["-"] * (len(columns) - 1)
-                else:
+
+                try:
+                    json_fields = columns
+                    raw_data = json.loads(response_text)
+                    row = [raw_data.get(field, "") for field in json_fields]
+
+                    if not is_valid_gstin(row[2]):
+                        row[2] = "MISSING"
+
                     try:
-                        json_fields = columns
-                        raw_data = json.loads(response_text)
-                        row = [raw_data.get(field, "") for field in json_fields]
+                        parsed_date = parser.parse(row[6], dayfirst=False)
+                        row[6] = parsed_date.strftime("%d/%m/%Y")
+                    except:
+                        row[6] = ""
 
-                        if not is_valid_gstin(row[2]):
-                            row[2] = "MISSING"
+                    if len(row[7].strip()) < 3 or re.match(r"^\d{2}/\d{2}/\d{4}$", row[7]):
+                        row[7] = "MISSING"
 
-                        try:
-                            parsed_date = parser.parse(row[6], dayfirst=False)
-                            row[6] = parsed_date.strftime("%d/%m/%Y")
-                        except:
-                            row[6] = ""
+                    for i in [10, 11, 12, 13, 14]:
+                        if not re.match(r"^\d+(\.\d+)?$", str(row[i]).replace(",", "").replace("₹", "")):
+                            row[i] = "0"
 
-                        if len(row[7].strip()) < 3 or re.match(r"^\d{2}/\d{2}/\d{4}$", row[7]):
-                            row[7] = "MISSING"
+                    if "%" in str(row[9]):
+                        row[9] = str(row[9]).replace("%", "")
 
-                        for i in [10, 11, 12, 13, 14]:
-                            if not re.match(r"^\d+(\.\d+)?$", str(row[i]).replace(",", "").replace("₹", "")):
-                                row[i] = "0"
+                    narration_text = (
+                        f"Invoice {row[1]} dated {row[6]} was issued by {row[0]} (GSTIN: {row[2]}) "
+                        f"to {row[4]} (GSTIN: {row[4]}), with a total value of ₹{row[14]}. "
+                        f"Taxes applied - CGST: ₹{row[11] or '0.00'}, SGST: ₹{row[12] or '0.00'}, "
+                        f"IGST: ₹{row[13] or '0.00'}. " + (f"Place of supply: {row[5]}. " if row[5] else "") +
+                        f"Expense: {row[7]}. TDS: {row[17]}."
+                    )
+                    row[15] = narration_text
+                    result_row = row
 
-                        if "%" in str(row[9]):
-                            row[9] = str(row[9]).replace("%", "")
-
-                        narration_text = (
-                            f"Invoice {row[1]} dated {row[6]} was issued by {row[0]} (GSTIN: {row[2]}) "
-                            f"to {row[4]} (GSTIN: {row[4]}), with a total value of ₹{row[14]}. "
-                            f"Taxes applied - CGST: ₹{row[11] or '0.00'}, SGST: ₹{row[12] or '0.00'}, "
-                            f"IGST: ₹{row[13] or '0.00'}. " + (f"Place of supply: {row[5]}. " if row[5] else "") +
-                            f"Expense: {row[7]}. TDS: {row[17]}."
-                        )
-                        row[15] = narration_text
-                        result_row = row
-
-                    except json.JSONDecodeError:
-    if "not an invoice" in response_text.lower():
-        result_row = ["NOT AN INVOICE"] + ["-"] * (len(columns) - 1)
-    else:
-        raise
+                except json.JSONDecodeError:
+                    if "not an invoice" in response_text.lower():
+                        result_row = ["NOT AN INVOICE"] + ["-"] * (len(columns) - 1)
+                    else:
+                        raise
 
                 st.session_state["processed_results"][file_name] = result_row
                 st.session_state["processing_status"][file_name] = "✅ Done"
