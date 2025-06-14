@@ -41,10 +41,10 @@ st.markdown("<h2 style='text-align: center;'>📄 AI Invoice Extractor (OpenAI)<
 st.markdown("Upload scanned PDF invoices and extract structured finance data using GPT-4 Vision")
 st.markdown("---")
 
-columns = [
-    "Vendor Name", "Invoice No", "GSTIN", "HSN/SAC", "Buyer Name", "Place of Supply", "Invoice Date", "Expense Ledger",
-    "GST Type", "Tax Rate", "Basic Amount", "CGST", "SGST", "IGST",
-    "Total Payable", "Narration", "GST Input Eligible", "TDS Applicable", "TDS Rate"
+# Define the fields we want to extract (matching the Gemini example structure)
+fields = [
+    "invoice_number", "date", "gstin", "seller_name", "buyer_name", "buyer_gstin",
+    "total_gross_worth", "cgst", "sgst", "igst", "place_of_supply", "expense_ledger", "tds"
 ]
 
 if "processed_results" not in st.session_state:
@@ -81,7 +81,6 @@ def convert_pdf_first_page(pdf_bytes):
 
 def safe_float(x):
     try:
-        # Handle currency symbols, commas, and spaces
         cleaned = str(x).replace(",", "").replace("₹", "").replace("$", "").strip()
         return float(cleaned) if cleaned else 0.0
     except:
@@ -97,15 +96,6 @@ def is_valid_gstin(gstin):
     if not gstin:
         return False
     return bool(re.match(r"^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z]{1}[1-9A-Z]{1}[Z]{1}[0-9A-Z]{1}$", gstin))
-
-def smart_tds_rate(section):
-    if not section or not isinstance(section, str):
-        return 0
-    section = section.lower()
-    if "194j" in section: return 10
-    if "194c" in section: return 2
-    if "194h" in section: return 5
-    return 0
 
 def extract_json_from_response(text):
     """Try to extract JSON from GPT response which might have extra text"""
@@ -126,10 +116,17 @@ def extract_json_from_response(text):
     except Exception:
         return None
 
+# Updated prompt to match the Gemini example structure
 main_prompt = (
-    "Extract structured invoice data as a JSON object with keys: Vendor Name, Invoice No, GSTIN, HSN/SAC, Buyer Name, Place of Supply, "
-    "Invoice Date, Expense Ledger, GST Type, Tax Rate, Basic Amount, CGST, SGST, IGST, Total Payable, Narration, GST Input Eligible, TDS Applicable, TDS Rate. "
-    "Use DD/MM/YYYY for dates. Use only values shown in the invoice. Return 'NOT AN INVOICE' if clearly not one."
+    "Extract structured invoice data as a JSON object with the following keys: "
+    "invoice_number, date, gstin, seller_name, buyer_name, buyer_gstin, "
+    "total_gross_worth, cgst, sgst, igst, place_of_supply, expense_ledger, tds. "
+    "Use DD/MM/YYYY for dates. Use only values shown in the invoice. "
+    "Return 'NOT AN INVOICE' if clearly not one. "
+    "If a value is not available, use null. "
+    "For expense_ledger, classify the nature of expense and suggest an applicable ledger type "
+    "(e.g., 'Office Supplies', 'Professional Fees', 'Software Subscription'). "
+    "For tds, determine TDS applicability (e.g., 'Yes - Section 194J', 'No', 'Uncertain')."
 )
 
 uploaded_files = st.file_uploader("📤 Upload scanned invoice PDFs", type=["pdf"], accept_multiple_files=True)
@@ -165,7 +162,7 @@ if uploaded_files:
                 base64_image = base64.b64encode(img_buf.read()).decode()
 
                 chat_prompt = [
-                    {"role": "system", "content": "You are a finance assistant."},
+                    {"role": "system", "content": "You are a finance assistant specializing in Indian invoices."},
                     {"role": "user", "content": [
                         {"type": "text", "text": main_prompt},
                         {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{base64_image}"}}
@@ -185,49 +182,81 @@ if uploaded_files:
                 
                 if raw_data is None:
                     if "not an invoice" in response_text.lower():
-                        result_row = ["NOT AN INVOICE"] + ["-"] * (len(columns) - 1)
+                        result_row = {
+                            "File Name": file_name,
+                            "Invoice Number": "NOT AN INVOICE",
+                            "Date": "",
+                            "Seller Name": "",
+                            "Seller GSTIN": "",
+                            "Buyer Name": "",
+                            "Buyer GSTIN": "",
+                            "Total Gross Worth": 0.0,
+                            "CGST": 0.0,
+                            "SGST": 0.0,
+                            "IGST": 0.0,
+                            "Place of Supply": "",
+                            "Expense Ledger": "",
+                            "TDS": "",
+                            "Narration": "This document was identified as not an invoice."
+                        }
                     else:
                         raise ValueError("GPT returned non-JSON response")
                 else:
-                    row = [raw_data.get(field, "") for field in columns]
-
+                    # Create the result row with all fields
+                    invoice_number = raw_data.get("invoice_number", "")
+                    date = raw_data.get("date", "")
+                    seller_name = raw_data.get("seller_name", "")
+                    seller_gstin = raw_data.get("gstin", "")
+                    buyer_name = raw_data.get("buyer_name", "")
+                    buyer_gstin = raw_data.get("buyer_gstin", "")
+                    total_gross_worth = safe_float(raw_data.get("total_gross_worth", 0.0))
+                    cgst = safe_float(raw_data.get("cgst", 0.0))
+                    sgst = safe_float(raw_data.get("sgst", 0.0))
+                    igst = safe_float(raw_data.get("igst", 0.0))
+                    place_of_supply = raw_data.get("place_of_supply", "")
+                    expense_ledger = raw_data.get("expense_ledger", "")
+                    tds = raw_data.get("tds", "")
+                    
                     # Validate and clean GSTIN
-                    if not is_valid_gstin(row[2]):
-                        row[2] = "MISSING"
-
+                    if not is_valid_gstin(seller_gstin):
+                        seller_gstin = "MISSING"
+                        
                     # Parse and format date
                     try:
-                        parsed_date = parser.parse(str(row[6]), dayfirst=True)
-                        row[6] = parsed_date.strftime("%d/%m/%Y")
+                        parsed_date = parser.parse(str(date), dayfirst=True)
+                        date = parsed_date.strftime("%d/%m/%Y")
                     except:
-                        row[6] = ""
-
-                    # Validate expense ledger
-                    if len(str(row[7]).strip()) < 3 or re.match(r"^\d{2}/\d{2}/\d{4}$", str(row[7])):
-                        row[7] = "MISSING"
-
-                    # Clean numeric fields
-                    for i in [9, 10, 11, 12, 13, 14]:
-                        if isinstance(row[i], str):
-                            # Remove percentage signs and currency symbols
-                            row[i] = str(row[i]).replace("%", "").replace("₹", "").replace(",", "").strip()
-                        # Ensure it's a valid number or set to 0
-                        try:
-                            float(row[i])
-                        except:
-                            row[i] = 0
-
-                    # Create narration text
-                    narration_text = (
-                        f"Invoice {row[1]} dated {row[6]} was issued by {row[0]} (GSTIN: {row[2]}) "
-                        f"to {row[4]}, with a total value of ₹{safe_float(row[14]):,.2f}. "
-                        f"Taxes applied - CGST: ₹{safe_float(row[11]):,.2f}, SGST: ₹{safe_float(row[12]):,.2f}, "
-                        f"IGST: ₹{safe_float(row[13]):,.2f}. " + 
-                        (f"Place of supply: {row[5]}. " if row[5] else "") +
-                        f"Expense: {row[7]}. TDS: {row[17]}."
+                        date = ""
+                    
+                    # Create narration text (matching Gemini example format)
+                    buyer_gstin_display = buyer_gstin or "N/A"
+                    narration = (
+                        f"Invoice {invoice_number} dated {date} "
+                        f"was issued by {seller_name} (GSTIN: {seller_gstin}) "
+                        f"to {buyer_name} (GSTIN: {buyer_gstin_display}), "
+                        f"with a total value of ₹{total_gross_worth:.2f}. "
+                        f"Taxes applied - CGST: ₹{cgst:.2f}, SGST: ₹{sgst:.2f}, IGST: ₹{igst:.2f}. "
+                        f"Place of supply: {place_of_supply or 'N/A'}. Expense: {expense_ledger or 'N/A'}. "
+                        f"TDS: {tds or 'N/A'}."
                     )
-                    row[15] = narration_text
-                    result_row = row
+                    
+                    result_row = {
+                        "File Name": file_name,
+                        "Invoice Number": invoice_number,
+                        "Date": date,
+                        "Seller Name": seller_name,
+                        "Seller GSTIN": seller_gstin,
+                        "Buyer Name": buyer_name,
+                        "Buyer GSTIN": buyer_gstin,
+                        "Total Gross Worth": total_gross_worth,
+                        "CGST": cgst,
+                        "SGST": sgst,
+                        "IGST": igst,
+                        "Place of Supply": place_of_supply,
+                        "Expense Ledger": expense_ledger,
+                        "TDS": tds,
+                        "Narration": narration
+                    }
 
                 st.session_state["processed_results"][file_name] = result_row
                 st.session_state["processing_status"][file_name] = "✅ Done"
@@ -235,7 +264,24 @@ if uploaded_files:
                 st.success(f"{file_name}: ✅ Done")
 
         except Exception as e:
-            st.session_state["processed_results"][file_name] = ["PROCESSING ERROR"] + [f"Error: {str(e)}"] + ["-"] * (len(columns) - 2)
+            error_row = {
+                "File Name": file_name,
+                "Invoice Number": "PROCESSING ERROR",
+                "Date": "",
+                "Seller Name": "",
+                "Seller GSTIN": "",
+                "Buyer Name": "",
+                "Buyer GSTIN": "",
+                "Total Gross Worth": 0.0,
+                "CGST": 0.0,
+                "SGST": 0.0,
+                "IGST": 0.0,
+                "Place of Supply": "",
+                "Expense Ledger": "",
+                "TDS": "",
+                "Narration": f"Error processing file: {str(e)}"
+            }
+            st.session_state["processed_results"][file_name] = error_row
             st.session_state["processing_status"][file_name] = "❌ Error"
             st.error(f"❌ Error processing {file_name}: {e}")
             st.text_area(f"Raw Output ({file_name})", response_text if 'response_text' in locals() else "No response", height=200)
@@ -244,46 +290,38 @@ if uploaded_files:
             if temp_file_path and os.path.exists(temp_file_path):
                 os.unlink(temp_file_path)
 
+# Get all processed results
 results = list(st.session_state["processed_results"].values())
+
 if results:
     if completed_json:
         st_lottie(completed_json, height=200, key="done_animation")
 
     st.markdown("<h3 style='text-align: center;'>🎉 Yippie! All invoices processed with a smile 😊</h3>", unsafe_allow_html=True)
 
-    # Create DataFrame with error handling
+    # Create DataFrame
     try:
-        df = pd.DataFrame(results, columns=columns)
-        df.insert(0, "S. No", range(1, len(df) + 1))
-
-        # Calculate additional columns with type safety
-        df["TDS Amount"] = df.apply(
-            lambda row: round(safe_float(row["Basic Amount"]) * smart_tds_rate(str(row["TDS Applicable"])) / 100, 2), 
-            axis=1
-        )
-        df["Gross Amount"] = df.apply(
-            lambda row: sum([
-                safe_float(row["Basic Amount"]),
-                safe_float(row["CGST"]),
-                safe_float(row["SGST"]),
-                safe_float(row["IGST"])
-            ]), 
-            axis=1
-        )
-        df["Net Payable"] = df["Gross Amount"] - df["TDS Amount"]
-
-        # Create formatted currency columns
-        currency_cols = ["Basic Amount", "CGST", "SGST", "IGST", "Total Payable", "TDS Amount", "Gross Amount", "Net Payable"]
+        df = pd.DataFrame(results)
+        
+        # Format currency columns
+        currency_cols = ["Total Gross Worth", "CGST", "SGST", "IGST"]
         for col in currency_cols:
             df[f"{col} (₹)"] = df[col].apply(format_currency)
-
-        st.dataframe(df)
+        
+        # Reorder columns for better display
+        display_cols = [
+            "File Name", "Invoice Number", "Date", "Seller Name", "Seller GSTIN",
+            "Buyer Name", "Buyer GSTIN", "Total Gross Worth (₹)", "CGST (₹)", 
+            "SGST (₹)", "IGST (₹)", "Place of Supply", "Expense Ledger", "TDS", "Narration"
+        ]
+        
+        st.dataframe(df[display_cols])
 
         # CSV Download
         csv_data = df.to_csv(index=False).encode("utf-8")
         st.download_button("📥 Download Results as CSV", csv_data, "invoice_results.csv", "text/csv")
 
-        # Excel Download with error handling
+        # Excel Download
         excel_buffer = io.BytesIO()
         try:
             with pd.ExcelWriter(excel_buffer, engine='xlsxwriter') as writer:
