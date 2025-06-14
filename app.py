@@ -1,7 +1,7 @@
 import streamlit as st
 st.set_page_config(layout="wide")
 
-from PIL import Image
+from PIL import Image, ImageEnhance, ImageFilter
 import fitz
 import io
 import pandas as pd
@@ -16,6 +16,17 @@ import locale
 import re
 from dateutil import parser
 import json
+
+# Import pytesseract and configure its path if necessary
+try:
+    import pytesseract
+    # If tesseract is not in your PATH, you might need to specify it:
+    # pytesseract.pytesseract.tesseract_cmd = r'/path/to/tesseract'
+except ImportError:
+    st.error("Pytesseract not found. Please install it using `pip install pytesseract` "
+             "and ensure Tesseract OCR is installed on your system.")
+    st.stop()
+
 
 locale.setlocale(locale.LC_ALL, '')
 
@@ -97,6 +108,24 @@ def convert_pdf_first_page(pdf_bytes):
     img_bytes = pix.tobytes("png")
     return Image.open(io.BytesIO(img_bytes))
 
+def preprocess_image(image: Image.Image) -> Image.Image:
+    """Applies contrast/sharpness boosts and a median filter to an image."""
+    # Convert to grayscale for better OCR performance on text
+    image = image.convert("L")
+    
+    # Apply contrast enhancement
+    enhancer = ImageEnhance.Contrast(image)
+    image = enhancer.enhance(1.5)  # Increase contrast by 50%
+
+    # Apply sharpness enhancement
+    enhancer = ImageEnhance.Sharpness(image)
+    image = enhancer.enhance(1.5) # Increase sharpness by 50%
+
+    # Apply median filter to reduce noise (good for scanned documents)
+    image = image.filter(ImageFilter.MedianFilter(size=3))
+    
+    return image
+
 def safe_float(x):
     try:
         cleaned = str(x).replace(",", "").replace("₹", "").replace("$", "").strip()
@@ -113,42 +142,20 @@ def format_currency(x):
         return "₹0.00"
 
 def is_valid_gstin(gstin):
-    """
-    Validates an Indian GSTIN with a robust regex, ensuring 15-character alphanumeric format
-    and specific structure (2-digit state, 10-char PAN, 13th entity char, 'Z', 15th checksum).
-    """
     if not gstin:
         return False
-    # Remove any spaces, dashes, or other non-alphanumeric chars for clean validation
     cleaned = re.sub(r'[^A-Z0-9]', '', gstin.upper())
-
     if len(cleaned) != 15:
         return False
-
-    # Pattern: DD + AAAAA + DDDD + A + [1-9A-Z] + Z + [0-9A-Z]
-    # This specifically looks for the PAN structure within the GSTIN (10 chars: 5 Letters, 4 Digits, 1 Letter)
-    # The 13th character (entity registration number) can be 1-9 or A-Z
-    # The 14th character is always 'Z'
-    # The 15th character (checksum) can be 0-9 or A-Z
-    pattern = r"^\d{2}[A-Z]{5}\d{4}[A-Z]{1}[1-9A-Z]{1}Z[0-9A-Z]{1}$"
+    pattern = r"^\d{2}[A-Z0-9]{10}[A-Z]{1}[A-Z0-9]{1}[Z]{1}[A-Z0-9]{1}$"
     return bool(re.match(pattern, cleaned))
 
 def extract_gstin_from_text(text):
-    """
-    Extracts and validates GSTINs from a given text.
-    Uses the robust GSTIN regex for initial matching.
-    """
     if not text:
         return ""
-    # Normalize the text by removing common separators like spaces, hyphens, and slashes
-    cleaned_text = re.sub(r'[\s\-/]', '', text.upper())
-
-    # Look for any 15-character alphanumeric sequence that matches the GSTIN pattern
-    pattern = r'\b(\d{2}[A-Z]{5}\d{4}[A-Z]{1}[1-9A-Z]{1}Z[0-9A-Z]{1})\b'
-    matches = re.findall(pattern, cleaned_text)
-
+    matches = re.findall(r'\b(\d{2}[A-Z0-9]{10}[A-Z]{1}[A-Z0-9]{1}Z[A-Z0-9]{1})\b', text.upper())
     for match in matches:
-        if is_valid_gstin(match): # Re-validate using the strict function
+        if is_valid_gstin(match):
             return match
     return ""
 
@@ -199,39 +206,22 @@ def extract_json_from_response(text):
 
 main_prompt = (
     "You are an expert at extracting structured data from Indian invoices. "
-    "Your primary goal is to extract information into a JSON object with the specified keys. "
+    "Your task is to extract information into a JSON object with the following keys. "
     "If a key's value is not explicitly present or derivable from the invoice, use `null` for that value. "
-    "**ABSOLUTELY CRITICAL: All extracted GSTINs (`gstin` and `buyer_gstin`) MUST strictly adhere to the 15-character Indian GSTIN format.** "
-    "**If any extracted GSTIN does not precisely match the described format, you MUST set its value to `null`. Do NOT infer, guess, or provide partial/incorrect GSTINs.**\n"
-    
-    "Keys to extract: `invoice_number`, `date`, `gstin` (seller's GSTIN), `seller_name`, `buyer_name`, `buyer_gstin`, "
-    "`taxable_amount`, `cgst`, `sgst`, `igst`, `place_of_supply`, `expense_ledger`, `tds`, `hsn_sac`. "
+    "Keys to extract: invoice_number, date, gstin (seller's GSTIN), seller_name, buyer_name, buyer_gstin, "
+    "taxable_amount, cgst, sgst, igst, place_of_supply, expense_ledger, tds, hsn_sac. "
     
     "GUIDELINES FOR EXTRACTION:\n"
-    "- 'invoice_number': The unique identifier of the invoice. Extract as is. If multiple are present, prioritize the most prominent one, usually near 'Invoice No.' or 'Bill No.'.\n"
-    "- 'date': The invoice date in **DD/MM/YYYY** format. If year is 2-digit, assume current century (e.g., 24 -> 2024). Always try to extract a full date.\n"
-    "- 'taxable_amount': This is the subtotal, the amount BEFORE any taxes (CGST, SGST, IGST) are applied. Must be a number (float). Look for terms like 'Sub Total', 'Taxable Value', 'Net Amount'.\n"
-    
-    "- 'gstin': **SELLER'S GSTIN.** This is the Goods and Services Tax Identification Number of the entity ISSUING the invoice. "
-    "  It MUST be a **15-character alphanumeric string** with the following strict structure:\n"
-    "  - First 2 digits: State Code (e.g., 27 for Maharashtra, 07 for Delhi).\n"
-    "  - Next 10 characters: PAN (Permanent Account Number) of the entity, typically 5 letters, 4 digits, 1 letter (e.g., ABCDE1234F).\n"
-    "  - 13th character: Entity registration number for the same PAN (usually 1-9 or A-Z, often '1').\n"
-    "  - 14th character: Fixed 'Z'.\n"
-    "  - 15th character: Checksum character (digit or letter, 0-9 or A-Z).\n"
-    "  **Example VALID GSTINs: '27AAAAA0000A1Z1', '07BBBBB0000B1Z2', '07AAFFD8152M1Z4'.**\n"
-    "  Search for labels like 'GSTIN', 'GST No.', 'GST Registration No.' near the seller's name or address. "
-    "  **IF THE EXTRACTED STRING DOES NOT EXACTLY MATCH THIS 15-CHARACTER VALID FORMAT (after removing spaces/hyphens), SET `gstin` to `null`.**\n"
-    
-    "- 'buyer_gstin': **BUYER'S GSTIN.** This is the GSTIN of the entity RECEIVING the invoice. "
-    "  It MUST also be a **15-character alphanumeric string** following the exact same validation rules as the seller's GSTIN. "
-    "  Look for labels like 'Buyer GSTIN', 'Recipient GSTIN', 'GSTIN of Buyer', usually near the buyer's name or 'Bill To'/'Ship To' address. "
-    "  **IF THE EXTRACTED STRING DOES NOT EXACTLY MATCH THIS 15-CHARACTER VALID FORMAT, SET `buyer_gstin` to `null`.**\n"
-    
+    "- 'invoice_number': The unique identifier of the invoice. Extract as is.\n"
+    "- 'date': The invoice date in DD/MM/YYYY format. If year is 2-digit, assume current century (e.g., 24 -> 2024).\n"
+    "- 'taxable_amount': This is the subtotal, the amount BEFORE any taxes (CGST, SGST, IGST) are applied. Must be a number.\n"
+    "- 'gstin': The GSTIN of the seller (the entity issuing the invoice). Must be a 15-character alphanumeric string. Prioritize the GSTIN explicitly labeled as 'GSTIN' or associated with the seller's main details.\n"
+    "- 'buyer_gstin': The GSTIN of the buyer (the entity receiving the invoice). Must be a 15-character alphanumeric string. Prioritize the GSTIN explicitly labeled as 'Buyer GSTIN' or associated with the buyer's details.\n"
     "- 'hsn_sac': Crucial for Indian invoices. "
-    "  - HSN (Harmonized System of Nomenclature) is for goods. SAC (Service Accounting Code) is for services."
-    "  - **ONLY extract the HSN/SAC code if it is EXPLICITLY mentioned on the invoice.** "
-    "  - It is typically a 4, 6, or 8-digit numeric code, sometimes alphanumeric (e.g., '998313', '8471')."
+    "  - HSN (Harmonized System of Nomenclature) is for goods."
+    "  - SAC (Service Accounting Code) is for services."
+    "  - **ONLY extract the HSN/SAC code if it is explicitly mentioned on the invoice.** "
+    "  - It is typically a 4, 6, or 8-digit numeric code, sometimes alphanumeric."
     "  - Look for labels like 'HSN Code', 'SAC Code', 'HSN/SAC', or just the code itself near item descriptions."
     "  - If multiple HSN/SAC codes are present for different line items, extract the one that appears most prominently, or the first one listed. If only one is present for the whole invoice, use that."
     "  - **If HSN/SAC is NOT found or explicitly stated, the value MUST be `null`. Do NOT guess or infer it.**\n"
@@ -243,7 +233,7 @@ main_prompt = (
     "  If the expense is clearly related to software licenses, subscriptions, or SaaS, classify as 'Software Subscription'."
     "  Aim for a general and universal ledger type if a precise one isn't obvious from the invoice details.\n"
     
-    "- 'tds': Determine TDS applicability. State 'Yes - Section [X]' if applicable with a section (e.g., 'Yes - Section 194J', 'Yes - Section 194C', 'Yes - Section 194I'), 'No' if clearly not, or 'Uncertain' if unclear. Always try to identify the TDS Section (e.g., 194J, 194C, 194I) if TDS is applicable.\n"
+    "- 'tds': Determine TDS applicability. State 'Yes - Section [X]' if applicable with a section, 'No' if clearly not, or 'Uncertain' if unclear. Always try to identify the TDS Section (e.g., 194J, 194C, 194I) if TDS is applicable.\n"
     
     "- 'place_of_supply': Crucial for Indian invoices to determine IGST applicability. "
     "  - **PRIORITY 1:** Look for a field explicitly labeled 'Place of Supply'. Extract the exact State/City name from this field (e.g., 'Delhi', 'Maharashtra')."
@@ -253,29 +243,8 @@ main_prompt = (
     "  - **SPECIAL CASE:** If the invoice text or context clearly indicates an export or foreign transaction (e.g., 'Export Invoice', mentions 'Foreign' address, non-Indian currency as primary total, or foreign recipient details), set the value to 'Foreign'."
     "  - **FALLBACK:** If none of the above are found or inferable, the value MUST be `null`."
     
-    "Return 'NOT AN INVOICE' if the document is clearly not an invoice."
-    "The output MUST be a JSON object, clearly formatted, and parsable. Wrap the JSON in triple backticks (```json...```)."
-    "Example of desired output structure with valid and null GSTINs:\n"
-    "```json\n"
-    "{\n"
-    '  "invoice_number": "INV-2024-001",\n'
-    '  "date": "15/05/2024",\n'
-    '  "gstin": "27AAAAA0000A1Z1",\n'
-    '  "seller_name": "Tech Solutions Pvt Ltd",\n'
-    '  "buyer_name": "Acme Corp",\n'
-    '  "buyer_gstin": "07BBBBB0000B1Z2",\n'
-    '  "taxable_amount": 1000.00,\n'
-    '  "cgst": 90.00,\n'
-    '  "sgst": 90.00,\n'
-    '  "igst": null,\n'
-    '  "place_of_supply": "Delhi",\n'
-    '  "expense_ledger": "Software Subscription",\n'
-    '  "tds": "Yes - Section 194J",\n'
-    '  "hsn_sac": "998313"\n'
-    "}\n"
-    "```\n"
-    "**IMPORTANT:** If a GSTIN is present on the invoice but appears malformed or not in the exact 15-character format, you must still output `null` for that specific GSTIN field. Prioritize the strict format validation over imperfect OCR results. If the invoice mentions 'GSTIN: Not Applicable' or equivalent, set the GSTIN field to `null`."
-    "Ensure all monetary values are floats with two decimal places if applicable."
+    "Return 'NOT AN INVOICE' if the document is clearly not an invoice.\n"
+    "Ensure the JSON output is clean and directly parsable."
 )
 
 # Render the file uploader using the placeholder
@@ -310,8 +279,6 @@ if st.session_state["files_uploaded"] or st.session_state["processed_results"]:
             st.session_state["file_uploader_key"] += 1
             
             # Clear all relevant session state variables explicitly
-            # It's safer to clear individual keys that you manage, rather than st.session_state.clear()
-            # especially when trying to maintain a widget's key for explicit reset.
             st.session_state["files_uploaded"] = False
             st.session_state["processed_results"] = {}
             st.session_state["processing_status"] = {}
@@ -355,20 +322,21 @@ if st.session_state["uploaded_files"] and st.session_state["process_triggered"]:
             with open(temp_file_path, "rb") as f:
                 pdf_data = f.read()
                 
-            first_image = convert_pdf_first_page(pdf_data)
+            first_image_original = convert_pdf_first_page(pdf_data)
+            first_image_preprocessed = preprocess_image(first_image_original)
 
             with st.spinner(f"🧠 Extracting data from {file_name} using GPT-4 Vision..."):
-                img_buf = io.BytesIO()
-                first_image.save(img_buf, format="PNG")
-                img_buf.seek(0)
-                base64_image = base64.b64encode(img_buf.read()).decode()
+                img_buf_gpt = io.BytesIO()
+                first_image_preprocessed.save(img_buf_gpt, format="PNG") # Send preprocessed image to GPT
+                img_buf_gpt.seek(0)
+                base64_image_gpt = base64.b64encode(img_buf_gpt.read()).decode()
 
                 chat_prompt = [
                     {
                         "role": "user",
                         "content": [
                             {"type": "text", "text": main_prompt},
-                            {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{base64_image}"}}
+                            {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{base64_image_gpt}"}}
                         ]
                     }
                 ]
@@ -403,18 +371,31 @@ if st.session_state["uploaded_files"] and st.session_state["process_triggered"]:
                     invoice_number = raw_data.get("invoice_number", "")
                     date = raw_data.get("date", "")
                     seller_name = raw_data.get("seller_name", "")
-                    
-                    # Apply GSTIN validation after extraction from raw_data
-                    extracted_seller_gstin = raw_data.get("gstin", "")
-                    seller_gstin = extracted_seller_gstin if is_valid_gstin(extracted_seller_gstin) else None 
-                    
-                    hsn_sac = raw_data.get("hsn_sac", "")
+                    seller_gstin = raw_data.get("gstin", "")
                     buyer_name = raw_data.get("buyer_name", "")
-                    
-                    # Apply GSTIN validation after extraction from raw_data
-                    extracted_buyer_gstin = raw_data.get("buyer_gstin", "")
-                    buyer_gstin = extracted_buyer_gstin if is_valid_gstin(extracted_buyer_gstin) else None 
-                    
+                    buyer_gstin = raw_data.get("buyer_gstin", "")
+
+                    # --- GSTIN Fallback Logic ---
+                    if not is_valid_gstin(seller_gstin) or not is_valid_gstin(buyer_gstin):
+                        with st.spinner(f"🔍 GPT missed GSTINs for {file_name}. Attempting OCR fallback with Pytesseract..."):
+                            # Perform OCR on the preprocessed image
+                            ocr_text = pytesseract.image_to_string(first_image_preprocessed, lang='eng')
+                            
+                            # Try to extract GSTINs from OCR text
+                            if not is_valid_gstin(seller_gstin):
+                                extracted_seller_gstin_ocr = extract_gstin_from_text(ocr_text)
+                                if is_valid_gstin(extracted_seller_gstin_ocr):
+                                    seller_gstin = extracted_seller_gstin_ocr
+                                    st.info(f"✅ Seller GSTIN found via OCR fallback for {file_name}.")
+                            
+                            if not is_valid_gstin(buyer_gstin):
+                                extracted_buyer_gstin_ocr = extract_gstin_from_text(ocr_text)
+                                if is_valid_gstin(extracted_buyer_gstin_ocr):
+                                    buyer_gstin = extracted_buyer_gstin_ocr
+                                    st.info(f"✅ Buyer GSTIN found via OCR fallback for {file_name}.")
+                    # --- End GSTIN Fallback Logic ---
+
+                    hsn_sac = raw_data.get("hsn_sac", "")
                     expense_ledger = raw_data.get("expense_ledger", "")
                     taxable_amount = safe_float(raw_data.get("taxable_amount", 0.0))
                     cgst = safe_float(raw_data.get("cgst", 0.0))
@@ -444,11 +425,9 @@ if st.session_state["uploaded_files"] and st.session_state["process_triggered"]:
                         date = ""
                         
                     buyer_gstin_display = buyer_gstin or "N/A"
-                    seller_gstin_display = seller_gstin or "N/A"
-                    
                     narration = (
                         f"Invoice {invoice_number or 'N/A'} dated {date or 'N/A'} "
-                        f"was issued by {seller_name or 'N/A'} (GSTIN: {seller_gstin_display}, HSN/SAC: {hsn_sac or 'N/A'}) "
+                        f"was issued by {seller_name or 'N/A'} (GSTIN: {seller_gstin or 'N/A'}, HSN/SAC: {hsn_sac or 'N/A'}) "
                         f"to {buyer_name or 'N/A'} (GSTIN: {buyer_gstin_display}), "
                         f"with a taxable amount of ₹{taxable_amount:,.2f}. "
                         f"Taxes applied - CGST: ₹{cgst:,.2f}, SGST: ₹{sgst:,.2f}, IGST: ₹{igst:,.2f}. "
@@ -463,10 +442,10 @@ if st.session_state["uploaded_files"] and st.session_state["process_triggered"]:
                         "Invoice Number": invoice_number,
                         "Date": date,
                         "Seller Name": seller_name,
-                        "Seller GSTIN": seller_gstin, # This will be None if invalid
+                        "Seller GSTIN": seller_gstin,
                         "HSN/SAC": hsn_sac,
                         "Buyer Name": buyer_name,
-                        "Buyer GSTIN": buyer_gstin, # This will be None if invalid
+                        "Buyer GSTIN": buyer_gstin,
                         "Expense Ledger": expense_ledger,
                         "Taxable Amount": taxable_amount,
                         "CGST": cgst,
@@ -492,8 +471,8 @@ if st.session_state["uploaded_files"] and st.session_state["process_triggered"]:
             error_row = {
                 "File Name": file_name,
                 "Invoice Number": "PROCESSING ERROR",
-                "Date": "", "Seller Name": "", "Seller GSTIN": None, # Set to None on error too
-                "HSN/SAC": "", "Buyer Name": "", "Buyer GSTIN": None, # Set to None on error too
+                "Date": "", "Seller Name": "", "Seller GSTIN": "",
+                "HSN/SAC": "", "Buyer Name": "", "Buyer GSTIN": "",
                 "Expense Ledger": "", "Taxable Amount": 0.0,
                 "CGST": 0.0, "SGST": 0.0, "IGST": 0.0, "Total Amount": 0.0,
                 "TDS Applicability": "Uncertain", "TDS Section": None,
@@ -527,10 +506,6 @@ if results and st.session_state.get("process_triggered", False):
     try:
         df = pd.DataFrame(results)
         
-        # Convert None GSTINs to "N/A" for display purposes in DataFrame
-        df["Seller GSTIN"] = df["Seller GSTIN"].fillna("N/A")
-        df["Buyer GSTIN"] = df["Buyer GSTIN"].fillna("N/A")
-
         currency_cols_mapping = {
             "Taxable Amount": "Taxable Amount (₹)", "CGST": "CGST (₹)", "SGST": "SGST (₹)",
             "IGST": "IGST (₹)", "Total Amount": "Total Amount (₹)", "TDS Amount": "TDS Amount (₹)",
@@ -578,17 +553,10 @@ if results and st.session_state.get("process_triggered", False):
         download_df = df.copy()
         for original_col, display_col in currency_cols_mapping.items():
             if display_col in download_df.columns:
-                # Remove the formatted currency columns before saving to CSV/Excel
-                download_df = download_df.drop(columns=[display_col]) 
+                download_df = download_df.drop(columns=[display_col])
         if 'TDS Rate (%)' in download_df.columns:
             download_df = download_df.drop(columns=['TDS Rate (%)'])
         
-        # Ensure raw numeric values are present for download (not formatted ones)
-        # Also ensure None GSTINs are empty strings for CSV/Excel for clean output
-        download_df['Seller GSTIN'] = download_df['Seller GSTIN'].replace('N/A', '')
-        download_df['Buyer GSTIN'] = download_df['Buyer GSTIN'].replace('N/A', '')
-
-
         download_cols_ordered = [col for col in display_cols if col not in currency_cols_mapping.values() and col != 'TDS Rate (%)']
         for col_name in ["Taxable Amount", "CGST", "SGST", "IGST", "Total Amount", "TDS Amount", "Amount Payable", "TDS Rate"]:
             if col_name in df.columns and col_name not in download_cols_ordered:
