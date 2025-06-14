@@ -366,16 +366,17 @@ st.markdown("""
         background-color: #3b82f6 !important; 
     }
     
-    /* *** CRITICAL FIX for instruction text visibility (MORE AGGRESSIVE) *** */
-    .stAlert.info,
-    .stAlert.info * /* Target all direct and indirect children within the info alert */
-    { 
-        color: #FFFFFF !important; /* Force white text */
-        text-shadow: none !important; /* Ensure no conflicting text shadows */
+    /* *** CRITICAL FIX for instruction text visibility (MORE AGGRESSIVE AND PRECISE) *** */
+    /* Target the stMarkdownContainer which holds the markdown content within the alert */
+    .stAlert.info div[data-testid="stMarkdownContainer"] * { 
+        color: #FFFFFF !important; /* Force white text for all elements inside this container */
+        text-shadow: none !important; /* Remove any potential text shadow */
     }
-    /* Explicitly target paragraph and list items just in case, with high specificity */
+    /* Also ensure any direct paragraphs or list items are covered if not caught by the above */
     .stAlert.info p, 
-    .stAlert.info li {
+    .stAlert.info li,
+    .stAlert.info strong,
+    .stAlert.info span {
         color: #FFFFFF !important;
     }
 </style>
@@ -568,7 +569,7 @@ if st.button("🚀 Process Invoices", type="primary"):
                         
                         tds_amount_extracted = extracted_data.tds_amount if extracted_data.tds_amount is not None else 0.0
                         tds_rate_extracted = extracted_data.tds_rate if extracted_data.tds_rate is not None else "N/A"
-                        tds_display = extracted_data.tds or "N/A" # Applicability string (e.g., "Yes - Section 194J")
+                        tds_display = extracted_data.tds or "N/A" # Applicability string (e.g., "Yes - 194J")
                         pos = extracted_data.place_of_supply or "N/A"
                         expense_ledger_display = extracted_data.expense_ledger or "N/A"
 
