@@ -2,7 +2,7 @@ import streamlit as st
 st.set_page_config(layout="wide")
 
 from PIL import Image, ImageEnhance, ImageFilter
-import fitz
+import fitz # PyMuPDF
 import io
 import pandas as pd
 import base64
@@ -17,14 +17,19 @@ import re
 from dateutil import parser
 import json
 
-# Import pytesseract and configure its path if necessary
+# Import pytesseract
 try:
     import pytesseract
-    # If tesseract is not in your PATH, you might need to specify it:
-    # pytesseract.pytesseract.tesseract_cmd = r'/path/to/tesseract'
+    # When deploying to Streamlit Community Cloud, Tesseract is installed via packages.txt
+    # and should be in the system's PATH. Therefore, we generally do NOT need to set
+    # pytesseract.pytesseract.tesseract_cmd explicitly here.
+    # If running locally and Tesseract isn't in your PATH, you might uncomment this:
+    # pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe' # Windows example
+    # pytesseract.pytesseract.tesseract_cmd = r'/usr/local/bin/tesseract' # macOS/Linux example
 except ImportError:
     st.error("Pytesseract not found. Please install it using `pip install pytesseract` "
-             "and ensure Tesseract OCR is installed on your system.")
+             "and ensure Tesseract OCR is installed on your system. "
+             "For Streamlit Community Cloud, add `tesseract-ocr` to a `packages.txt` file.")
     st.stop()
 
 
@@ -72,10 +77,6 @@ if "process_triggered" not in st.session_state:
 if "file_uploader_key" not in st.session_state:
     st.session_state["file_uploader_key"] = 0
 
-# --- Placeholders for dynamic content, including the file uploader ---
-# This placeholder will be used to completely redraw the file uploader
-file_uploader_placeholder = st.empty()
-
 # --- Admin/API Key Config ---
 st.sidebar.header("🔐 AI Config")
 passcode = st.sidebar.text_input("Admin Passcode", type="password")
@@ -84,15 +85,17 @@ admin_unlocked = passcode == "Rajeev"
 openai_api_key = None
 if admin_unlocked:
     st.sidebar.success("🔓 Admin access granted.")
+    # Attempt to get from Streamlit secrets first, then allow manual input
     openai_api_key = st.secrets.get("OPENAI_API_KEY")
     if not openai_api_key:
-        st.sidebar.error("OPENAI_API_KEY missing in Streamlit secrets.")
-        st.stop()
+        st.sidebar.warning("OPENAI_API_KEY not found in Streamlit secrets. Please enter it manually.")
+        openai_api_key = st.sidebar.text_input("🔑 Enter your OpenAI API Key", type="password", key="admin_api_key_manual")
 else:
-    openai_api_key = st.sidebar.text_input("🔑 Enter your OpenAI API Key", type="password")
-    if not openai_api_key:
-        st.sidebar.warning("Please enter a valid API key to continue.")
-        st.stop()
+    openai_api_key = st.sidebar.text_input("🔑 Enter your OpenAI API Key", type="password", key="user_api_key_manual")
+
+if not openai_api_key:
+    st.sidebar.warning("Please enter a valid API key to continue.")
+    st.stop()
 
 try:
     client = OpenAI(api_key=openai_api_key)
@@ -376,7 +379,8 @@ if st.session_state["uploaded_files"] and st.session_state["process_triggered"]:
                     buyer_gstin = raw_data.get("buyer_gstin", "")
 
                     # --- GSTIN Fallback Logic ---
-                    if not is_valid_gstin(seller_gstin) or not is_valid_gstin(buyer_gstin):
+                    # Only attempt OCR if GPT missed *both* GSTINs or provided invalid ones.
+                    if (not is_valid_gstin(seller_gstin)) or (not is_valid_gstin(buyer_gstin)):
                         with st.spinner(f"🔍 GPT missed GSTINs for {file_name}. Attempting OCR fallback with Pytesseract..."):
                             # Perform OCR on the preprocessed image
                             ocr_text = pytesseract.image_to_string(first_image_preprocessed, lang='eng')
