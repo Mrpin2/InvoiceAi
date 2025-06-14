@@ -41,10 +41,11 @@ st.markdown("<h2 style='text-align: center;'>📄 AI Invoice Extractor (OpenAI)<
 st.markdown("Upload scanned PDF invoices and extract structured finance data using GPT-4 Vision")
 st.markdown("---")
 
-# Define the fields we want to extract
+# Define the fields we want to extract (ADDED hsn_sac)
 fields = [
     "invoice_number", "date", "gstin", "seller_name", "buyer_name", "buyer_gstin",
-    "taxable_amount", "cgst", "sgst", "igst", "place_of_supply", "expense_ledger", "tds"
+    "taxable_amount", "cgst", "sgst", "igst", "place_of_supply", "expense_ledger", 
+    "tds", "hsn_sac"
 ]
 
 if "processed_results" not in st.session_state:
@@ -182,11 +183,11 @@ def extract_json_from_response(text):
     except Exception:
         return None
 
-# Enhanced prompt with specific GSTIN instructions
+# Enhanced prompt with specific GSTIN and HSN/SAC instructions
 main_prompt = (
     "Extract structured invoice data as a JSON object with the following keys: "
     "invoice_number, date, gstin, seller_name, buyer_name, buyer_gstin, "
-    "taxable_amount, cgst, sgst, igst, place_of_supply, expense_ledger, tds. "
+    "taxable_amount, cgst, sgst, igst, place_of_supply, expense_ledger, tds, hsn_sac. "
     "Important: 'taxable_amount' is the amount BEFORE taxes. "
     "Use DD/MM/YYYY for dates. Use only values shown in the invoice. "
     "Return 'NOT AN INVOICE' if clearly not one. "
@@ -197,6 +198,12 @@ main_prompt = (
     "2. It's usually located near the seller's name or address "
     "3. If you can't find GSTIN in the dedicated field, look in the seller details section "
     "4. GSTIN might be labeled as 'GSTIN', 'GST No.', or 'GST Number' "
+    
+    "SPECIAL INSTRUCTIONS FOR HSN/SAC: "
+    "1. HSN (Harmonized System of Nomenclature) is for goods, SAC (Services Accounting Code) for services "
+    "2. Typically 4-8 digit codes found in item tables or tax breakdown sections "
+    "3. If multiple codes exist, use the most frequent one or the one on tax line "
+    "4. If no HSN/SAC code is visible in the document, leave blank - DO NOT GUESS "
     
     "For expense_ledger, classify the nature of expense and suggest an applicable ledger type "
     "(e.g., 'Office Supplies', 'Professional Fees', 'Software Subscription'). "
@@ -236,7 +243,7 @@ if uploaded_files:
                 base64_image = base64.b64encode(img_buf.read()).decode()
 
                 chat_prompt = [
-                    {"role": "system", "content": "You are a finance assistant specializing in Indian invoices. Pay special attention to GSTIN extraction."},
+                    {"role": "system", "content": "You are a finance assistant specializing in Indian invoices. Pay special attention to GSTIN and HSN/SAC extraction."},
                     {"role": "user", "content": [
                         {"type": "text", "text": main_prompt},
                         {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{base64_image}"}}
@@ -274,6 +281,7 @@ if uploaded_files:
                             "Amount Payable": 0.0,
                             "Place of Supply": "",
                             "Expense Ledger": "",
+                            "HSN/SAC": "",  # ADDED
                             "TDS": "",
                             "Narration": "This document was identified as not an invoice."
                         }
@@ -294,6 +302,7 @@ if uploaded_files:
                     place_of_supply = raw_data.get("place_of_supply", "")
                     expense_ledger = raw_data.get("expense_ledger", "")
                     tds_str = raw_data.get("tds", "")
+                    hsn_sac = raw_data.get("hsn_sac", "")  # ADDED HSN/SAC
                     
                     # Calculate derived fields
                     total_amount = taxable_amount + cgst + sgst + igst
@@ -349,6 +358,7 @@ if uploaded_files:
                         f"Taxes applied - CGST: ₹{cgst:,.2f}, SGST: ₹{sgst:,.2f}, IGST: ₹{igst:,.2f}. "
                         f"Total Amount: ₹{total_amount:,.2f}. "
                         f"Place of supply: {place_of_supply or 'N/A'}. Expense: {expense_ledger or 'N/A'}. "
+                        f"HSN/SAC: {hsn_sac or 'N/A'}. "  # ADDED
                         f"TDS: {tds_str or 'N/A'} @ {tds_rate}% (₹{tds_amount:,.2f}). "
                         f"Amount Payable: ₹{amount_payable:,.2f}."
                     )
@@ -372,6 +382,7 @@ if uploaded_files:
                         "Amount Payable": amount_payable,
                         "Place of Supply": place_of_supply,
                         "Expense Ledger": expense_ledger,
+                        "HSN/SAC": hsn_sac,  # ADDED
                         "TDS": tds_str,
                         "Narration": narration
                     }
@@ -400,6 +411,7 @@ if uploaded_files:
                 "Amount Payable": 0.0,
                 "Place of Supply": "",
                 "Expense Ledger": "",
+                "HSN/SAC": "",  # ADDED
                 "TDS": "",
                 "Narration": f"Error processing file: {str(e)}"
             }
@@ -419,7 +431,7 @@ if results:
     if completed_json:
         st_lottie(completed_json, height=200, key="done_animation")
 
-    st.markdown("<h3 style='text-align: center;'>🎉 Yippie! All invoices processed with a smile 😊</h3>", unsafe_allow_html=True)
+    st.markdown("<h3 style='text-align: center;'>🎉 Yippie! All invoices Processed! 😊</h3>", unsafe_allow_html=True)
 
     # Create DataFrame
     try:
@@ -433,13 +445,13 @@ if results:
         # Format TDS Rate as percentage
         df["TDS Rate (%)"] = df["TDS Rate"].apply(lambda x: f"{x}%")
         
-        # Reorder columns for better display (removed GSTIN status)
+        # Reorder columns for better display (ADDED HSN/SAC)
         display_cols = [
             "File Name", "Invoice Number", "Date", "Seller Name", "Seller GSTIN", 
             "Buyer Name", "Buyer GSTIN", "Taxable Amount (₹)", 
             "CGST (₹)", "SGST (₹)", "IGST (₹)", "Total Amount (₹)", "TDS Rate (%)", 
             "TDS Amount (₹)", "Amount Payable (₹)", "Place of Supply", 
-            "Expense Ledger", "TDS", "Narration"
+            "Expense Ledger", "HSN/SAC", "TDS", "Narration"  # ADDED HSN/SAC
         ]
         
         st.dataframe(df[display_cols])
