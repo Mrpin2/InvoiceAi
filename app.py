@@ -353,6 +353,7 @@ st.markdown("""
     }
     .stAlert.info { 
         background-color: #000000; /* Set to pure black */
+        color: #FFFFFF !important; /* Force white color on the alert container itself */
     }
     .stAlert.success { 
         background-color: #e8f5e9; 
@@ -366,18 +367,18 @@ st.markdown("""
         background-color: #3b82f6 !important; 
     }
     
-    /* *** CRITICAL FIX for instruction text visibility (MORE AGGRESSIVE AND PRECISE) *** */
-    /* Target the stMarkdownContainer which holds the markdown content within the alert */
-    .stAlert.info div[data-testid="stMarkdownContainer"] * { 
-        color: #FFFFFF !important; /* Force white text for all elements inside this container */
-        text-shadow: none !important; /* Remove any potential text shadow */
-    }
-    /* Also ensure any direct paragraphs or list items are covered if not caught by the above */
-    .stAlert.info p, 
-    .stAlert.info li,
-    .stAlert.info strong,
-    .stAlert.info span {
-        color: #FFFFFF !important;
+    /* *** CRITICAL FIX for instruction text visibility (MAXIMUM SPECIFICITY) *** */
+    /* Target the stMarkdownContainer and all its direct/indirect children */
+    .stAlert.info div[data-testid="stMarkdownContainer"] *,
+    .stAlert.info div[data-testid="stMarkdownContainer"] p, 
+    .stAlert.info div[data-testid="stMarkdownContainer"] li,
+    .stAlert.info div[data-testid="stMarkdownContainer"] span,
+    .stAlert.info div[data-testid="stMarkdownContainer"] strong,
+    .stAlert.info div[data-testid="stMarkdownContainer"] em, /* for italic text */
+    .stAlert.info div[data-testid="stMarkdownContainer"] a /* for links within the info box */
+    { 
+        color: #FFFFFF !important; /* Force white text for all these elements */
+        text-shadow: none !important; /* Ensure no conflicting text shadows */
     }
 </style>
 """, unsafe_allow_html=True)
