@@ -12,8 +12,10 @@ from streamlit_lottie import st_lottie
 from openai import OpenAI
 import tempfile
 import os
+import locale
 
-# Lottie Animations
+locale.setlocale(locale.LC_ALL, '')
+
 hello_lottie = "https://raw.githubusercontent.com/Mrpin2/InvoiceAi/refs/heads/main/Animation%20-%201749845212531.json"
 completed_lottie = "https://raw.githubusercontent.com/Mrpin2/InvoiceAi/refs/heads/main/Animation%20-%201749845303699.json"
 
@@ -91,6 +93,18 @@ def convert_pdf_first_page(pdf_bytes):
     pix = page.get_pixmap(dpi=300)
     return Image.open(io.BytesIO(pix.tobytes("png")))
 
+def safe_float(x):
+    try:
+        return float(str(x).replace(",", "").strip())
+    except:
+        return 0.0
+
+def format_currency(x):
+    try:
+        return f"₹{safe_float(x):,.2f}"
+    except:
+        return "₹0.00"
+
 uploaded_files = st.file_uploader("📤 Upload scanned invoice PDFs", type=["pdf"], accept_multiple_files=True)
 
 if uploaded_files:
@@ -141,7 +155,6 @@ if uploaded_files:
                     row = [x.strip().strip('"') for x in csv_line.split(",")]
                     result_row = row[:len(columns)] if len(row) >= len(columns) else row + ["-"] * (len(columns) - len(row))
 
-                    # Smart narration
                     try:
                         narration_text = (
                             f"Invoice {result_row[1]} dated {result_row[6]} was issued by {result_row[0]} (GSTIN: {result_row[2]}) "
@@ -180,15 +193,17 @@ if results:
     df = pd.DataFrame(results, columns=columns)
     df.insert(0, "S. No", range(1, len(df) + 1))
 
-    # Add calculated columns
-    df["TDS Amount"] = df.apply(lambda row: round(float(row["Basic Amount"]) * 0.10, 2) if "194j" in str(row["TDS Applicable"]).lower() else 0.0, axis=1)
+    df["TDS Amount"] = df.apply(lambda row: round(safe_float(row["Basic Amount"]) * 0.10, 2) if "194j" in str(row["TDS Applicable"]).lower() else 0.0, axis=1)
     df["Gross Amount"] = df.apply(lambda row: sum([
-        float(row["Basic Amount"] or 0),
-        float(row["CGST"] or 0),
-        float(row["SGST"] or 0),
-        float(row["IGST"] or 0)
+        safe_float(row["Basic Amount"]),
+        safe_float(row["CGST"]),
+        safe_float(row["SGST"]),
+        safe_float(row["IGST"])
     ]), axis=1)
     df["Net Payable"] = df["Gross Amount"] - df["TDS Amount"]
+
+    for col in ["Basic Amount", "CGST", "SGST", "IGST", "Total Payable", "TDS Amount", "Gross Amount", "Net Payable"]:
+        df[f"{col} (₹)"] = df[col].apply(format_currency)
 
     st.dataframe(df)
 
