@@ -47,7 +47,7 @@ if not st.session_state["files_uploaded"]:
         st_lottie(hello_json, height=200, key="hello")
 
 st.markdown("<h2 style='text-align: center;'>📄 AI Invoice Extractor (OpenAI + Gemini)</h2>", unsafe_allow_html=True)
-st.markdown("Upload scanned PDF invoices and extract structured finance data using GPT-4 Vision and Gemini for GSTIN validation.")
+st.markdown("Upload scanned PDF invoices and extract structured finance data using GPT-4 Vision, with **Gemini specifically for GSTIN extraction and validation.**")
 st.markdown("---")
 
 # Initialize session states for storing results and processing status
@@ -106,7 +106,12 @@ except Exception as e:
 
 try:
     genai.configure(api_key=gemini_api_key)
-    gemini_model = genai.GenerativeModel('gemini-pro-vision' if 'vision' in genai.GenerativeModel.list_models()[0].name else 'gemini-pro') # Use vision model if available
+    # Ensure a vision-capable model is used for image input
+    gemini_model = genai.GenerativeModel('gemini-1.5-pro' if '1.5-pro' in [m.name for m in genai.GenerativeModel.list_models()] else 'gemini-pro-vision')
+    # Fallback to gemini-pro if no vision model is found (though less effective for image tasks)
+    if 'vision' not in gemini_model.model_name and '1.5-pro' not in gemini_model.model_name:
+         gemini_model = genai.GenerativeModel('gemini-pro')
+         st.warning("No vision-capable Gemini model found. Falling back to 'gemini-pro'. GSTIN extraction from images might be less accurate.")
 except Exception as e:
     st.error(f"Failed to initialize Gemini client. Check your API key: {e}")
     st.stop()
@@ -144,49 +149,51 @@ def is_valid_gstin(gstin):
     pattern = r"^\d{2}[A-Z0-9]{10}[A-Z]{1}[A-Z0-9]{1}[Z]{1}[A-Z0-9]{1}$"
     return bool(re.match(pattern, cleaned))
 
-# This function will now use Gemini API
-def extract_gstin_with_gemini(image_data, text_data=""):
+# This function will now ONLY use Gemini API for GSTIN extraction
+def extract_gstins_with_gemini(image_data):
     """
-    Extracts and validates GSTINs using the Gemini API.
-    Prioritizes extraction from image if available, falls back to text.
+    Extracts all potential valid GSTINs from the provided image using the Gemini API.
+    Returns a dictionary with 'seller_gstin' and 'buyer_gstin' keys.
     """
     prompt = (
-        "Extract all potential GSTINs from the provided image/text. "
-        "A valid Indian GSTIN is a 15-character alphanumeric string. "
-        "Format the output as a JSON list of strings, e.g., ['GSTIN1', 'GSTIN2']. "
-        "If no valid GSTINs are found, return an empty list []."
+        "You are an expert at identifying Indian GSTINs from images of invoices. "
+        "Your task is to identify the 'seller GSTIN' (the GSTIN of the entity issuing the invoice) "
+        "and the 'buyer GSTIN' (the GSTIN of the entity receiving the invoice). "
+        "An Indian GSTIN is a 15-character alphanumeric string, typically following the pattern: "
+        "2 digits (state code) + 10 alphanumeric characters (PAN) + 1 digit (entity code) + 1 letter (checksum) + 1 Z + 1 checksum digit/letter."
+        "Example: '07AAFFD8152M1Z4'."
+        "If you find multiple GSTINs, clearly distinguish which one belongs to the seller and which to the buyer."
+        "Return the result as a JSON object with two keys: 'seller_gstin' and 'buyer_gstin'. "
+        "If a GSTIN is not found or not clearly identifiable, use `null` for that key's value."
+        "Example output: `{'seller_gstin': '07AAFFD8152M1Z4', 'buyer_gstin': '07AAICE6026F1ZS'}`."
+        "If no GSTINs are found at all, return `{'seller_gstin': null, 'buyer_gstin': null}`."
     )
     
-    parts = [{"mime_type": "image/png", "data": image_data}]
-    if text_data:
-        # Optionally, you can add text as another part if you want Gemini to consider it.
-        # This might be useful if the image quality is poor but text OCR is good.
-        # For simplicity, we'll focus on image, but you could add:
-        # parts.append({"mime_type": "text/plain", "data": text_data})
-        pass
-
     try:
+        image_part = {"mime_type": "image/png", "data": image_data}
         response = gemini_model.generate_content([prompt, Image.open(io.BytesIO(image_data))])
         response_text = response.text.strip()
         
-        # Attempt to parse as JSON list
-        try:
-            gstins = json.loads(response_text)
-            if isinstance(gstins, list):
-                # Filter for valid GSTINs
-                return [g for g in gstins if is_valid_gstin(g)]
-        except json.JSONDecodeError:
-            # If not a direct JSON list, try to find patterns in the raw text
-            pass
+        extracted_data = extract_json_from_response(response_text)
+        
+        seller_gstin = extracted_data.get('seller_gstin') if extracted_data else None
+        buyer_gstin = extracted_data.get('buyer_gstin') if extracted_data else None
 
-        # Fallback to regex if Gemini doesn't return a perfect JSON list
-        matches = re.findall(r'\b(\d{2}[A-Z0-9]{10}[A-Z]{1}[A-Z0-9]{1}Z[A-Z0-9]{1})\b', response_text.upper())
-        valid_gstins = [match for match in matches if is_valid_gstin(match)]
-        return valid_gstins
+        # Validate extracted GSTINs with the existing is_valid_gstin function
+        final_seller_gstin = seller_gstin if is_valid_gstin(seller_gstin) else None
+        final_buyer_gstin = buyer_gstin if is_valid_gstin(buyer_gstin) else None
+
+        return {
+            'seller_gstin': final_seller_gstin,
+            'buyer_gstin': final_buyer_gstin
+        }
 
     except Exception as e:
         st.warning(f"Gemini API call failed for GSTIN extraction: {e}")
-        return []
+        return {
+            'seller_gstin': None,
+            'buyer_gstin': None
+        }
 
 def determine_tds_rate(expense_ledger, tds_str="", place_of_supply=""):
     if place_of_supply and place_of_supply.lower() == "foreign":
@@ -237,15 +244,14 @@ main_prompt = (
     "You are an expert at extracting structured data from Indian invoices. "
     "Your task is to extract information into a JSON object with the following keys. "
     "If a key's value is not explicitly present or derivable from the invoice, use `null` for that value. "
-    "Keys to extract: invoice_number, date, gstin (seller's GSTIN), seller_name, buyer_name, buyer_gstin, "
+    "Keys to extract: invoice_number, date, seller_name, buyer_name, "
     "taxable_amount, cgst, sgst, igst, place_of_supply, expense_ledger, tds, hsn_sac. "
+    "DO NOT attempt to extract GSTINs. GSTINs will be handled by a separate process."
     
     "GUIDELINES FOR EXTRACTION:\n"
     "- 'invoice_number': The unique identifier of the invoice. Extract as is.\n"
     "- 'date': The invoice date in DD/MM/YYYY format. If year is 2-digit, assume current century (e.g., 24 -> 2024).\n"
     "- 'taxable_amount': This is the subtotal, the amount BEFORE any taxes (CGST, SGST, IGST) are applied. Must be a number.\n"
-    "- 'gstin': The GSTIN of the seller (the entity issuing the invoice). Must be a 15-character alphanumeric string. Prioritize the GSTIN explicitly labeled as 'GSTIN' or associated with the seller's main details.\n"
-    "- 'buyer_gstin': The GSTIN of the buyer (the entity receiving the invoice). Must be a 15-character alphanumeric string. Prioritize the GSTIN explicitly labeled as 'Buyer GSTIN' or associated with the buyer's details.\n"
     "- 'hsn_sac': Crucial for Indian invoices. "
     "  - HSN (Harmonized System of Nomenclature) is for goods."
     "  - SAC (Service Accounting Code) is for services."
@@ -402,10 +408,8 @@ if st.session_state["uploaded_files"] and st.session_state["process_triggered"]:
                     invoice_number = raw_data.get("invoice_number", "")
                     date = raw_data.get("date", "")
                     seller_name = raw_data.get("seller_name", "")
-                    seller_gstin_openai = raw_data.get("gstin", "") # Store OpenAI's GSTIN separately
                     hsn_sac = raw_data.get("hsn_sac", "")
                     buyer_name = raw_data.get("buyer_name", "")
-                    buyer_gstin_openai = raw_data.get("buyer_gstin", "") # Store OpenAI's GSTIN separately
                     expense_ledger = raw_data.get("expense_ledger", "")
                     taxable_amount = safe_float(raw_data.get("taxable_amount", 0.0))
                     cgst = safe_float(raw_data.get("cgst", 0.0))
@@ -414,35 +418,13 @@ if st.session_state["uploaded_files"] and st.session_state["process_triggered"]:
                     place_of_supply = raw_data.get("place_of_supply", "")
                     tds_str = raw_data.get("tds", "")
 
-                    # --- Gemini API for GSTIN validation/extraction ---
-                    st.info(f"🔍 Validating GSTINs for {file_name} using Gemini...")
-                    extracted_gstins_gemini = extract_gstin_with_gemini(img_bytes)
+                    # --- Gemini API for GSTIN extraction (sole source for GSTINs) ---
+                    st.info(f"🔍 Extracting and validating GSTINs for {file_name} using Gemini...")
+                    gstin_data_from_gemini = extract_gstins_with_gemini(img_bytes)
                     
-                    # Logic to choose the best GSTINs or combine them
-                    seller_gstin = ""
-                    buyer_gstin = ""
-
-                    # Prioritize Gemini's findings if they are valid
-                    if extracted_gstins_gemini:
-                        # Simple heuristic: assume the first valid GSTIN is seller, second is buyer
-                        # You might need more sophisticated logic here based on your prompt to Gemini
-                        if len(extracted_gstins_gemini) >= 1 and is_valid_gstin(extracted_gstins_gemini[0]):
-                            seller_gstin = extracted_gstins_gemini[0]
-                        if len(extracted_gstins_gemini) >= 2 and is_valid_gstin(extracted_gstins_gemini[1]):
-                            buyer_gstin = extracted_gstins_gemini[1]
-                        elif seller_gstin and is_valid_gstin(seller_gstin_openai) and seller_gstin_openai != seller_gstin and len(extracted_gstins_gemini) == 1:
-                            # If Gemini only found one, and OpenAI found another, use OpenAI's as buyer if valid
-                             buyer_gstin = seller_gstin_openai
-                        elif buyer_gstin_openai and not buyer_gstin and is_valid_gstin(buyer_gstin_openai):
-                            # If Gemini didn't find a buyer GSTIN, use OpenAI's if it's valid
-                            buyer_gstin = buyer_gstin_openai
-                    
-                    # If Gemini didn't find any or not enough, fallback to OpenAI's initial extraction
-                    if not seller_gstin and is_valid_gstin(seller_gstin_openai):
-                        seller_gstin = seller_gstin_openai
-                    if not buyer_gstin and is_valid_gstin(buyer_gstin_openai):
-                        buyer_gstin = buyer_gstin_openai
-                    # --- End of Gemini API for GSTIN validation/extraction ---
+                    seller_gstin = gstin_data_from_gemini['seller_gstin'] if gstin_data_from_gemini else None
+                    buyer_gstin = gstin_data_from_gemini['buyer_gstin'] if gstin_data_from_gemini else None
+                    # --- End of Gemini API for GSTIN extraction ---
 
 
                     total_amount = taxable_amount + cgst + sgst + igst
@@ -483,10 +465,10 @@ if st.session_state["uploaded_files"] and st.session_state["process_triggered"]:
                         "Invoice Number": invoice_number,
                         "Date": date,
                         "Seller Name": seller_name,
-                        "Seller GSTIN": seller_gstin, # Use the Gemini-validated/prioritized GSTIN
+                        "Seller GSTIN": seller_gstin, # Now solely from Gemini
                         "HSN/SAC": hsn_sac,
                         "Buyer Name": buyer_name,
-                        "Buyer GSTIN": buyer_gstin, # Use the Gemini-validated/prioritized GSTIN
+                        "Buyer GSTIN": buyer_gstin, # Now solely from Gemini
                         "Expense Ledger": expense_ledger,
                         "Taxable Amount": taxable_amount,
                         "CGST": cgst,
