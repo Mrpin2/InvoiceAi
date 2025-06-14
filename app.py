@@ -456,7 +456,7 @@ if results:
         
         st.dataframe(df[display_cols])
 
-        # Create download dataframe with HSN/SAC column
+        # Create download dataframe without status columns
         download_df = df[display_cols].copy()
         
         # CSV Download
