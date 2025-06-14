@@ -316,7 +316,7 @@ if st.session_state["uploaded_files"] and st.session_state["process_triggered"]:
                 response = client.chat.completions.create(
                     model="gpt-4o",
                     messages=chat_prompt,
-                    max_tokens=1000
+                    max_tokens=1500
                 )
 
                 response_text = response.choices[0].message.content.strip()
