@@ -268,7 +268,7 @@ else:
     st.session_state["files_uploaded"] = False
 
 # Conditional display of buttons after file upload
-if st.session_state["files_uploaded"]:
+if st.session_state["files_uploaded"] or st.session_state["process_triggered"]: # Show buttons if files uploaded or process triggered
     # Create columns: one for "Process Invoices", a large empty one, and one for "Clear All"
     col_process, col_spacer, col_clear = st.columns([1, 4, 1]) # Adjust 4 for more or less space
     
@@ -279,9 +279,9 @@ if st.session_state["files_uploaded"]:
 
     with col_clear:
         if st.button("🗑️ Clear All Files & Reset", help="Click to clear all uploaded files and extracted data."):
+            # IMPORTANT FIX: Increment key BEFORE clearing session_state
+            st.session_state["file_uploader_key"] += 1
             st.session_state.clear() # Clear all session state
-            # Increment the file_uploader_key to force the file_uploader to reset on rerun
-            st.session_state["file_uploader_key"] += 1 
             st.rerun() # Rerun the app to reflect the cleared state
 
 # Only proceed with processing if files are uploaded AND the "Process Invoices" button was clicked
@@ -637,7 +637,8 @@ if results and st.session_state["process_triggered"]: # Only show results if pro
         st.balloons()
 
 else:
-    if st.session_state["uploaded_files"] and not st.session_state["process_triggered"]:
-        st.info("Files uploaded. Click 'Process Invoices' to start extraction.")
-    elif not st.session_state["uploaded_files"]:
+    # Changed logic: If no files are in session_state, show upload prompt
+    if not st.session_state["uploaded_files"]:
         st.info("Upload one or more scanned invoices to get started.")
+    elif st.session_state["uploaded_files"] and not st.session_state["process_triggered"]:
+        st.info("Files uploaded. Click 'Process Invoices' to start extraction.")
