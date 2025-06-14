@@ -1,21 +1,24 @@
 import streamlit as st
 st.set_page_config(layout="wide")
 
-from PIL import Image
-import fitz
 import io
 import pandas as pd
 import base64
 import requests
-import traceback
-from streamlit_lottie import st_lottie
-from openai import OpenAI
 import tempfile
 import os
 import locale
-import re
 from dateutil import parser
 import json
+from streamlit_lottie import st_lottie
+from openai import OpenAI
+
+# Import utility functions
+from utils.general_utils import safe_float, format_currency
+from utils.gstin_utils import is_valid_gstin, extract_gstin_from_text
+from utils.tds_utils import determine_tds_rate
+from utils.openai_utils import extract_json_from_response, MAIN_PROMPT
+from utils.pdf_utils import convert_pdf_first_page
 
 locale.setlocale(locale.LC_ALL, '')
 
@@ -73,136 +76,6 @@ else:
 
 client = OpenAI(api_key=openai_api_key)
 
-def convert_pdf_first_page(pdf_bytes):
-    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
-    page = doc.load_page(0)
-    pix = page.get_pixmap(dpi=300)
-    return Image.open(io.BytesIO(pix.tobytes("png")))
-
-def safe_float(x):
-    try:
-        cleaned = str(x).replace(",", "").replace("₹", "").replace("$", "").strip()
-        return float(cleaned) if cleaned else 0.0
-    except:
-        return 0.0
-
-def format_currency(x):
-    try:
-        return f"₹{safe_float(x):,.2f}"
-    except:
-        return "₹0.00"
-
-def is_valid_gstin(gstin):
-    """Validate GSTIN format with more flexibility"""
-    if not gstin:
-        return False
-        
-    # Clean the GSTIN: remove spaces, special characters, convert to uppercase
-    cleaned = re.sub(r'[^A-Z0-9]', '', gstin.upper())
-    
-    # GSTIN must be exactly 15 characters
-    if len(cleaned) != 15:
-        return False
-        
-    # Validate pattern: 2 digits + 10 alphanumeric + 1 letter + 1 alphanumeric + 1 letter
-    pattern = r"^\d{2}[A-Z0-9]{10}[A-Z]{1}[A-Z0-9]{1}[Z]{1}[A-Z0-9]{1}$"
-    return bool(re.match(pattern, cleaned))
-
-def extract_gstin_from_text(text):
-    """Try to extract GSTIN from any text using pattern matching"""
-    # Look for GSTIN pattern in the text
-    matches = re.findall(r'\b\d{2}[A-Z0-9]{10}[A-Z]{1}[A-Z0-9]{1}Z[A-Z0-9]{1}\b', text.upper())
-    if matches:
-        return matches[0]
-    return ""
-
-def determine_tds_rate(expense_ledger, tds_str=""):
-    """Determine TDS rate based on expense ledger and TDS string"""
-    # First check if TDS string contains a specific rate
-    if tds_str and isinstance(tds_str, str):
-        # Look for percentage in the TDS string
-        match = re.search(r'(\d+(\.\d+)?)%', tds_str)
-        if match:
-            return float(match.group(1))
-        
-        # Check for TDS sections
-        section_rates = {
-            "194j": 10.0,  # Professional services
-            "194c": 2.0,   # Contracts
-            "194h": 5.0,   # Commission/brokerage
-            "194i": 10.0,  # Rent
-            "194q": 1.0    # Advertising
-        }
-        for section, rate in section_rates.items():
-            if section in tds_str.lower():
-                return rate
-    
-    # If no TDS string info, determine by expense ledger
-    expense_ledger = expense_ledger.lower() if expense_ledger else ""
-    
-    # Professional services - 10%
-    if "professional" in expense_ledger or "consultancy" in expense_ledger or "service" in expense_ledger:
-        return 10.0
-    
-    # Contract work - 2%
-    if "contract" in expense_ledger or "sub-contract" in expense_ledger or "work" in expense_ledger:
-        return 2.0
-    
-    # Commission, brokerage - 5%
-    if "commission" in expense_ledger or "brokerage" in expense_ledger:
-        return 5.0
-    
-    # Rent - 10%
-    if "rent" in expense_ledger:
-        return 10.0
-    
-    # Advertisement - 1%
-    if "advertis" in expense_ledger or "marketing" in expense_ledger:
-        return 1.0
-    
-    # Default to 0 if not applicable
-    return 0.0
-
-def extract_json_from_response(text):
-    """Try to extract JSON from GPT response which might have extra text"""
-    try:
-        # Look for JSON code block
-        matches = re.findall(r'```json\s*({.*?})\s*```', text, re.DOTALL)
-        if matches:
-            return json.loads(matches[0])
-        
-        # Look for plain JSON
-        start = text.find('{')
-        end = text.rfind('}')
-        if start != -1 and end != -1:
-            return json.loads(text[start:end+1])
-        
-        # Try parsing the whole text
-        return json.loads(text)
-    except Exception:
-        return None
-
-# Enhanced prompt with specific GSTIN instructions
-main_prompt = (
-    "Extract structured invoice data as a JSON object with the following keys: "
-    "invoice_number, date, gstin, seller_name, buyer_name, buyer_gstin, "
-    "taxable_amount, cgst, sgst, igst, place_of_supply, expense_ledger, tds. "
-    "Important: 'taxable_amount' is the amount BEFORE taxes. "
-    "Use DD/MM/YYYY for dates. Use only values shown in the invoice. "
-    "Return 'NOT AN INVOICE' if clearly not one. "
-    "If a value is not available, use null. "
-    
-    "SPECIAL INSTRUCTIONS FOR GSTIN: "
-    "1. GSTIN is a 15-digit alphanumeric code (format: 22AAAAA0000A1Z5) "
-    "2. It's usually located near the seller's name or address "
-    "3. If you can't find GSTIN in the dedicated field, look in the seller details section "
-    "4. GSTIN might be labeled as 'GSTIN', 'GST No.', or 'GST Number' "
-    
-    "For expense_ledger, classify the nature of expense and suggest an applicable ledger type "
-    "(e.g., 'Office Supplies', 'Professional Fees', 'Software Subscription'). "
-    "For tds, determine TDS applicability (e.g., 'Yes - Section 194J', 'No', 'Uncertain')."
-)
-
 uploaded_files = st.file_uploader("📤 Upload scanned invoice PDFs", type=["pdf"], accept_multiple_files=True)
 
 if uploaded_files:
@@ -238,7 +111,7 @@ if uploaded_files:
                 chat_prompt = [
                     {"role": "system", "content": "You are a finance assistant specializing in Indian invoices. Pay special attention to GSTIN extraction."},
                     {"role": "user", "content": [
-                        {"type": "text", "text": main_prompt},
+                        {"type": "text", "text": MAIN_PROMPT},
                         {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{base64_image}"}}
                     ]}
                 ]
@@ -246,7 +119,7 @@ if uploaded_files:
                 response = client.chat.completions.create(
                     model="gpt-4o",
                     messages=chat_prompt,
-                    max_tokens=1500  # Increased for better extraction
+                    max_tokens=1500
                 )
 
                 response_text = response.choices[0].message.content.strip()
@@ -302,7 +175,6 @@ if uploaded_files:
                     amount_payable = total_amount - tds_amount
                     
                     # Enhanced GSTIN handling
-                    original_gstin = seller_gstin
                     gstin_status = "VALID"
                     
                     # Clean and validate GSTIN
@@ -318,19 +190,11 @@ if uploaded_files:
                             fallback_gstin = extract_gstin_from_text(seller_name)
                             if fallback_gstin:
                                 seller_gstin = fallback_gstin
-                                gstin_status = "EXTRACTED_FROM_NAME"
                     else:
                         # Try to extract GSTIN from seller name if not provided
                         fallback_gstin = extract_gstin_from_text(seller_name)
                         if fallback_gstin:
                             seller_gstin = fallback_gstin
-                            gstin_status = "EXTRACTED_FROM_NAME"
-                        else:
-                            gstin_status = "MISSING"
-                    
-                    # Final GSTIN validation
-                    if not is_valid_gstin(seller_gstin):
-                        gstin_status = "INVALID"
                     
                     # Parse and format date
                     try:
@@ -339,7 +203,7 @@ if uploaded_files:
                     except:
                         date = ""
                     
-                    # Create narration text with GSTIN status
+                    # Create narration text
                     buyer_gstin_display = buyer_gstin or "N/A"
                     narration = (
                         f"Invoice {invoice_number} dated {date} "
@@ -353,7 +217,7 @@ if uploaded_files:
                         f"Amount Payable: ₹{amount_payable:,.2f}."
                     )
                     
-                    # Add GSTIN status to results (but not displayed)
+                    # Create result row
                     result_row = {
                         "File Name": file_name,
                         "Invoice Number": invoice_number,
@@ -433,7 +297,7 @@ if results:
         # Format TDS Rate as percentage
         df["TDS Rate (%)"] = df["TDS Rate"].apply(lambda x: f"{x}%")
         
-        # Reorder columns for better display (removed GSTIN status)
+        # Reorder columns for better display
         display_cols = [
             "File Name", "Invoice Number", "Date", "Seller Name", "Seller GSTIN", 
             "Buyer Name", "Buyer GSTIN", "Taxable Amount (₹)", 
@@ -444,7 +308,7 @@ if results:
         
         st.dataframe(df[display_cols])
 
-        # Create download dataframe without status columns
+        # Create download dataframe
         download_df = df[display_cols].copy()
         
         # CSV Download
