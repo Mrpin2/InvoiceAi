@@ -352,7 +352,7 @@ st.markdown("""
         font-family: 'Roboto', 'Helvetica Neue', Arial, sans-serif; 
     }
     .stAlert.info { 
-        background-color: #000000; /* Black background */
+        background-color: #333333; /* Darker grey background */
     }
     .stAlert.success { 
         background-color: #e8f5e9; 
@@ -370,7 +370,9 @@ st.markdown("""
     /* Target paragraphs and list items directly inside the st.info alert */
     .stAlert.info p, 
     .stAlert.info li,
-    .stAlert.info div { /* Also target generic div in case the list items are wrapped */
+    .stAlert.info div, /* Added div as a general container */
+    .stAlert.info div[data-testid="stMarkdownContainer"] li /* More specific for list items */
+    { 
         color: #FFFFFF !important; /* White text for strong contrast */
         font-weight: 500 !important; /* Make it a bit bolder */
         text-shadow: none !important; /* Remove any potential text shadow */
