@@ -1,4 +1,3 @@
-```python
 import streamlit as st
 st.set_page_config(layout="wide")
 
@@ -31,7 +30,7 @@ def load_lottie_json_safe(url):
     """Loads Lottie animation JSON safely from a URL."""
     try:
         r = requests.get(url)
-        r.raise_or_status()
+        r.raise_for_status()
         return r.json()
     except requests.exceptions.RequestException as e:
         st.warning(f"Could not load Lottie animation from {url}: {e}")
@@ -623,4 +622,3 @@ else:
         st.info("Upload one or more scanned invoices to get started.")
     elif st.session_state.get("uploaded_files") and not st.session_state.get("process_triggered", False):
         st.info("Files uploaded. Click 'Process Invoices' to start extraction.")
-```
