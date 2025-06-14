@@ -9,16 +9,29 @@ from datetime import datetime
 import json
 import base64
 
+# --- New Imports for PDF to Image Conversion ---
+try:
+    import fitz # PyMuPDF
+    from PIL import Image
+except ImportError:
+    st.warning("PyMuPDF (fitz) or Pillow not installed. PDF to image conversion will not work for OpenAI.")
+    # Set these to None if not imported, so we can check for them later
+    fitz = None
+    Image = None
+
+
 # --- Import Libraries for Both Models ---
 try:
     from google import genai
 except ImportError:
     st.warning("The 'google-generativeai' library is not installed. Gemini functionality will be unavailable.")
+    genai = None # Set to None if not imported
 
 try:
     from openai import OpenAI
 except ImportError:
     st.warning("The 'openai' library is not installed. OpenAI functionality will be unavailable.")
+    OpenAI = None # Set to None if not imported
 
 
 # --- Pydantic Models (Common for both APIs) ---
@@ -79,6 +92,10 @@ def extract_from_gemini(
     display_name = os.path.basename(file_path)
     gemini_file_resource = None
 
+    if genai is None:
+        st.error("Gemini library not initialized. Cannot use Gemini.")
+        return None
+
     try:
         st.info(f"Gemini: Uploading '{display_name}' to Gemini File API...")
         gemini_file_resource = client_instance.files.upload(
@@ -119,7 +136,7 @@ def extract_from_gemini(
         if gemini_file_resource:
             try:
                 st.info(f"Gemini: Attempting to delete '{gemini_file_resource.name}' from File API...")
-                if hasattr(client_instance, 'files') and hasattr(client_instance.files, 'delete'):
+                if client_instance and hasattr(client_instance, 'files') and hasattr(client_instance.files, 'delete'):
                     client_instance.files.delete(name=gemini_file_resource.name)
                     st.success(f"Gemini: Successfully deleted '{gemini_file_resource.name}'.")
                 else:
@@ -134,39 +151,73 @@ def extract_from_openai(
     file_path: str,
     pydantic_schema: BaseModel,
 ) -> Optional[Invoice]:
-    """Extracts structured data from an invoice PDF/image using OpenAI Vision."""
+    """Extracts structured data from an invoice PDF using OpenAI Vision by converting PDF pages to images."""
     display_name = os.path.basename(file_path)
 
+    if OpenAI is None:
+        st.error("OpenAI library not initialized. Cannot use OpenAI.")
+        return None
+
+    if fitz is None or Image is None:
+        st.error("PyMuPDF (fitz) or Pillow not installed. Cannot process PDFs for OpenAI. Please check your requirements.txt.")
+        return None
+
     try:
-        with open(file_path, "rb") as f:
-            file_content_bytes = f.read()
-        base64_file = base64.b64encode(file_content_bytes).decode('utf-8')
+        doc = fitz.open(file_path)
+        image_messages = []
+        # OpenAI Vision can take up to 20 images per request.
+        # For invoices, one or two pages are usually enough.
+        # Adjust `max_pages_to_process` if your invoices are multi-page.
+        max_pages_to_process = 5 # Limit to prevent excessive costs/tokens for very long PDFs
+
+        for page_num in range(min(doc.page_count, max_pages_to_process)):
+            page = doc.load_page(page_num)
+            # Render at 2x resolution (matrix=fitz.Matrix(2, 2)) for better OCR, DPI ~144-150
+            # Higher resolution means larger images, more tokens, more cost. Balance is key.
+            pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))
+            img_bytes_io = io.BytesIO()
+            # Convert pixmap to PIL Image, then save to bytes in PNG format
+            pil_image = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+            pil_image.save(img_bytes_io, format="PNG")
+            img_bytes = img_bytes_io.getvalue()
+
+            base64_image = base64.b64encode(img_bytes).decode('utf-8')
+            image_messages.append({
+                "type": "image_url",
+                "image_url": {
+                    "url": f"data:image/png;base64,{base64_image}",
+                    "detail": "high" # Use 'high' detail for better OCR, 'low' for faster/cheaper
+                }
+            })
+        doc.close()
+
+        if not image_messages:
+            st.error(f"No pages could be converted to images for '{display_name}'. This might happen with corrupted PDFs or empty files.")
+            return None
 
         system_prompt = (
-            "You are an expert invoice data extractor. Extract all specified details from the provided invoice document. "
+            "You are an expert invoice data extractor. Extract all specified details from the provided invoice document(s). "
             "Output the data strictly as a JSON object conforming to the following Pydantic schema structure. "
             "Ensure dates are in DD/MM/YYYY format. "
             "If a field is not found or is optional, set it to `null` or an empty string as appropriate. "
             "Here is the JSON schema you must adhere to:\n"
             f"```json\n{pydantic_schema.schema_json(indent=2)}\n```\n"
             "Do not include any conversational text or explanations outside the JSON. "
-            "Be very precise with amounts and details, including all line items if present."
+            "Be very precise with amounts and details, including all line items if present. "
+            "If the invoice has multiple pages, consolidate information from all pages."
         )
 
-        user_prompt_text = "Extract invoice data according to the provided schema from this document."
+        user_prompt_text = "Extract invoice data according to the provided schema from these document pages."
 
-        st.info(f"OpenAI: Sending '{display_name}' to model '{openai_model_id}' for extraction...")
+        st.info(f"OpenAI: Sending {len(image_messages)} image(s) from '{display_name}' to model '{openai_model_id}' for extraction...")
+
+        messages_content = [{"type": "text", "text": user_prompt_text}] + image_messages
 
         response = client_instance.chat.completions.create(
             model=openai_model_id,
             messages=[
                 {"role": "system", "content": system_prompt},
-                {"role": "user", "content": [
-                    {"type": "text", "text": user_prompt_text},
-                    {"type": "image_url", "image_url": {
-                        "url": f"data:application/pdf;base64,{base64_file}"
-                    }}
-                ]}
+                {"role": "user", "content": messages_content}
             ],
             response_format={"type": "json_object"},
             max_tokens=4000
@@ -174,8 +225,10 @@ def extract_from_openai(
 
         if response and response.choices and response.choices[0].message and response.choices[0].message.content:
             json_string = response.choices[0].message.content
-            st.markdown("##### Raw JSON from OpenAI:")
-            st.code(json_string, language="json")
+            # Debugging: show raw JSON only if debug mode is active
+            if st.session_state.get('DEBUG_MODE', False):
+                st.markdown("##### Raw JSON from OpenAI:")
+                st.code(json_string, language="json")
             try:
                 extracted_dict = json.loads(json_string)
                 extracted_invoice = pydantic_schema.parse_obj(extracted_dict)
@@ -183,15 +236,20 @@ def extract_from_openai(
                 return extracted_invoice
             except json.JSONDecodeError as e:
                 st.error(f"OpenAI: Failed to decode JSON from response for '{display_name}': {e}")
-                st.code(json_string, language="json")
+                st.error(f"Response content: {json_string[:500]}...") # Show beginning of problematic JSON
+                if st.session_state.get('DEBUG_MODE', False):
+                    st.code(json_string, language="json")
                 return None
             except Exception as e:
                 st.error(f"OpenAI: Failed to parse extracted data into schema for '{display_name}': {e}")
-                st.code(json_string, language="json")
+                st.error(f"Response content: {json_string[:500]}...") # Show beginning of problematic JSON
+                if st.session_state.get('DEBUG_MODE', False):
+                    st.code(json_string, language="json")
                 return None
         else:
             st.warning(f"OpenAI: No content received or unexpected response structure for '{display_name}'.")
-            st.json(response.dict())
+            if st.session_state.get('DEBUG_MODE', False):
+                st.json(response.dict()) # Show full response object for debug
             return None
 
     except Exception as e:
@@ -228,17 +286,23 @@ st.title("📄 AI Invoice Extractor (Multi-Model Powered)")
 st.sidebar.header("Configuration")
 
 # --- Admin Panel for using secrets ---
-ADMIN_PASSWORD = st.secrets.get("ADMIN_PASSWORD", "default_admin_password_if_not_set_in_secrets") # Fallback for local testing
+# ADMIN_PASSWORD will be fetched from Streamlit Secrets. If not found there, it defaults to "Rajeev".
+ADMIN_PASSWORD = st.secrets.get("ADMIN_PASSWORD", "Rajeev")
+
 admin_password_input = st.sidebar.text_input("Admin Password (Optional):", type="password", key="admin_pass")
 
 use_secrets_keys = False
-if admin_password_input: # Only attempt if something is entered
+if admin_password_input:
     if admin_password_input == ADMIN_PASSWORD:
         st.sidebar.success("Admin mode activated. Using API keys from secrets.")
         use_secrets_keys = True
+        st.session_state.DEBUG_MODE = True # Activate debug mode when in admin mode
     else:
         st.sidebar.error("Incorrect admin password.")
-        use_secrets_keys = False # Ensure it's false if password is wrong
+        use_secrets_keys = False
+        st.session_state.DEBUG_MODE = False # Deactivate debug mode if password is wrong
+else:
+    st.session_state.DEBUG_MODE = False # Default to no debug mode if no password entered
 
 # Model Selection
 model_choice = st.sidebar.radio(
@@ -257,7 +321,7 @@ if use_secrets_keys:
         selected_api_key = st.secrets.get("GEMINI_API_KEY")
         model_id_input = st.secrets.get("GEMINI_MODEL_ID", "gemini-1.5-flash-latest")
         if not selected_api_key:
-            st.sidebar.warning("GEMINI_API_KEY not found in secrets. Please add it to .streamlit/secrets.toml")
+            st.sidebar.warning("GEMINI_API_KEY not found in Streamlit Secrets. Please add it.")
         st.sidebar.text_input("Gemini Model ID:", model_id_input, key="gemini_model_id_secrets", disabled=True)
         st.sidebar.caption(f"Using model ID from secrets: `{model_id_input}`")
 
@@ -265,24 +329,26 @@ if use_secrets_keys:
         selected_api_key = st.secrets.get("OPENAI_API_KEY")
         model_id_input = st.secrets.get("OPENAI_MODEL_ID", "gpt-4o")
         if not selected_api_key:
-            st.sidebar.warning("OPENAI_API_KEY not found in secrets. Please add it to .streamlit/secrets.toml")
+            st.sidebar.warning("OPENAI_API_KEY not found in Streamlit Secrets. Please add it.")
         st.sidebar.text_input("OpenAI Model ID:", model_id_input, key="openai_model_id_secrets", disabled=True)
         st.sidebar.caption(f"Using model ID from secrets: `{model_id_input}`")
 
-    # Inform user about which keys are being used
     if selected_api_key:
-        st.sidebar.info(f"Using {model_choice} API Key from `secrets.toml`.")
+        st.sidebar.info(f"Using {model_choice} API Key from `Streamlit Secrets`.")
     else:
-        st.sidebar.warning(f"No {model_choice} API Key loaded from `secrets.toml`. "
-                           "Please enter it manually below or add it to `secrets.toml`.")
-        # Fallback to manual input if secrets not found, even in admin mode
+        # This fallback happens if admin mode is ON but the *specific API key* is missing from secrets.
+        st.sidebar.error(f"No {model_choice} API Key loaded from `Streamlit Secrets`. "
+                           "Please enter it manually below (this will override the secrets attempt).")
         if model_choice == "Google Gemini":
             selected_api_key = st.sidebar.text_input("Enter your Gemini API Key:", type="password", key="gemini_key_manual_fallback")
+            if not model_id_input:
+                model_id_input = st.sidebar.text_input("Gemini Model ID (Manual Fallback):", "gemini-1.5-flash-latest", key="gemini_model_id_manual_fallback")
         elif model_choice == "OpenAI GPT":
             selected_api_key = st.sidebar.text_input("Enter your OpenAI API Key:", type="password", key="openai_key_manual_fallback")
+            if not model_id_input:
+                model_id_input = st.sidebar.text_input("OpenAI Model ID (Manual Fallback):", "gpt-4o", key="openai_model_id_manual_fallback")
 
-
-else: # Default behavior: user must enter keys
+else: # Default behavior: user must enter keys manually
     if model_choice == "Google Gemini":
         selected_api_key = st.sidebar.text_input("Enter your Gemini API Key:", type="password", key="gemini_key")
         DEFAULT_GEMINI_MODEL_ID = "gemini-1.5-flash-latest"
@@ -297,7 +363,8 @@ else: # Default behavior: user must enter keys
 st.info(
     "**Instructions:**\n"
     f"1. Select your preferred AI model ({model_choice}) in the sidebar.\n"
-    "2. If you know the admin password, enter it to use pre-configured API keys. Otherwise, enter your own.\n"
+    "2. If you know the admin password, enter it to use pre-configured API keys from `Streamlit Secrets`.\n"
+    "   Otherwise, enter your own API keys manually.\n"
     "3. Upload one or more PDF invoice files.\n"
     "4. Click 'Process Invoices' to extract data.\n"
     "   The extracted data will be displayed in a table and available for download as Excel."
@@ -315,6 +382,8 @@ if 'gemini_client' not in st.session_state:
     st.session_state.gemini_client = None
 if 'openai_client' not in st.session_state:
     st.session_state.openai_client = None
+if 'DEBUG_MODE' not in st.session_state:
+    st.session_state.DEBUG_MODE = False
 
 
 if st.button("🚀 Process Invoices", type="primary"):
@@ -327,7 +396,7 @@ if st.button("🚀 Process Invoices", type="primary"):
     else:
         client_initialized = False
         if model_choice == "Google Gemini":
-            if 'genai' in globals():
+            if genai: # Check if genai was imported successfully
                 try:
                     st.session_state.gemini_client = genai.Client(api_key=selected_api_key)
                     st.success("Gemini client initialized successfully!")
@@ -336,10 +405,10 @@ if st.button("🚀 Process Invoices", type="primary"):
                     st.error(f"Failed to initialize Gemini client: {e}. Please check your API key.")
                     st.session_state.gemini_client = None
             else:
-                st.error("Gemini library not found. Cannot initialize Gemini client.")
+                st.error("Gemini library not found or failed to import. Cannot initialize Gemini client.")
 
         elif model_choice == "OpenAI GPT":
-            if 'OpenAI' in globals():
+            if OpenAI: # Check if OpenAI was imported successfully
                 try:
                     st.session_state.openai_client = OpenAI(api_key=selected_api_key)
                     st.success("OpenAI client initialized successfully!")
@@ -348,7 +417,7 @@ if st.button("🚀 Process Invoices", type="primary"):
                     st.error(f"Failed to initialize OpenAI client: {e}. Please check your API key.")
                     st.session_state.openai_client = None
             else:
-                st.error("OpenAI library not found. Cannot initialize OpenAI client.")
+                st.error("OpenAI library not found or failed to import. Cannot initialize OpenAI client.")
         
         if not client_initialized:
             st.stop()
@@ -366,6 +435,7 @@ if st.button("🚀 Process Invoices", type="primary"):
                 temp_file_path = None
                 extracted_data = None
                 try:
+                    # Save uploaded file to a temporary file for PyMuPDF/OpenAI to access
                     with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(uploaded_file_obj.name)[1]) as tmp:
                         tmp.write(uploaded_file_obj.getvalue())
                         temp_file_path = tmp.name
@@ -458,7 +528,7 @@ if st.button("🚀 Process Invoices", type="primary"):
                     st.exception(e_outer)
                 finally:
                     if temp_file_path and os.path.exists(temp_file_path):
-                        os.unlink(temp_file_path)
+                        os.unlink(temp_file_path) # Clean up the temporary file
                 progress_bar.progress((i + 1) / total_files)
 
             st.markdown(f"---")
@@ -472,6 +542,7 @@ if st.session_state.summary_rows:
     df = pd.DataFrame(st.session_state.summary_rows)
 
     df_display = df.copy()
+    # Format currency columns for display in the DataFrame
     for col in ["Total Gross Worth", "CGST", "SGST", "IGST"]:
         df_display[col] = df_display[col].apply(format_currency)
 
@@ -479,6 +550,7 @@ if st.session_state.summary_rows:
 
     output_excel = io.BytesIO()
     with pd.ExcelWriter(output_excel, engine='openpyxl') as writer:
+        # Write the unformatted DataFrame to Excel to keep numbers as numbers
         df.to_excel(writer, index=False, sheet_name='InvoiceSummary')
     excel_data = output_excel.getvalue()
 
