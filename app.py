@@ -41,10 +41,10 @@ st.markdown("<h2 style='text-align: center;'>📄 AI Invoice Extractor (OpenAI)<
 st.markdown("Upload scanned PDF invoices and extract structured finance data using GPT-4 Vision")
 st.markdown("---")
 
-# Define the fields we want to extract (matching the Gemini example structure)
+# Define the fields we want to extract
 fields = [
     "invoice_number", "date", "gstin", "seller_name", "buyer_name", "buyer_gstin",
-    "total_gross_worth", "cgst", "sgst", "igst", "place_of_supply", "expense_ledger", "tds"
+    "taxable_amount", "cgst", "sgst", "igst", "place_of_supply", "expense_ledger", "tds"
 ]
 
 if "processed_results" not in st.session_state:
@@ -97,6 +97,44 @@ def is_valid_gstin(gstin):
         return False
     return bool(re.match(r"^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z]{1}[1-9A-Z]{1}[Z]{1}[0-9A-Z]{1}$", gstin))
 
+def determine_tds_rate(tds_str, expense_ledger):
+    """
+    Determine TDS rate based on TDS string and expense ledger
+    - First tries to extract percentage from TDS string
+    - If not found, guesses based on expense ledger type
+    """
+    # Try to extract rate from TDS string
+    if tds_str and isinstance(tds_str, str):
+        match = re.search(r'(\d+(\.\d+)?)%', tds_str)
+        if match:
+            return float(match.group(1))
+    
+    # Guess based on expense ledger if not found in TDS string
+    expense_ledger = expense_ledger.lower() if expense_ledger else ""
+    
+    # Professional services - 10%
+    if "professional" in expense_ledger or "consultancy" in expense_ledger or "technical" in expense_ledger:
+        return 10.0
+    
+    # Contract work - 1-2%
+    if "contract" in expense_ledger or "sub-contract" in expense_ledger or "work" in expense_ledger:
+        return 2.0  # Default to 2% for contracts
+    
+    # Commission, brokerage - 5%
+    if "commission" in expense_ledger or "brokerage" in expense_ledger:
+        return 5.0
+    
+    # Rent - 10%
+    if "rent" in expense_ledger:
+        return 10.0
+    
+    # Advertisement - 1%
+    if "advertis" in expense_ledger:
+        return 1.0
+    
+    # Default to 0 if not applicable
+    return 0.0
+
 def extract_json_from_response(text):
     """Try to extract JSON from GPT response which might have extra text"""
     try:
@@ -116,17 +154,19 @@ def extract_json_from_response(text):
     except Exception:
         return None
 
-# Updated prompt to match the Gemini example structure
+# Updated prompt with clear instructions
 main_prompt = (
     "Extract structured invoice data as a JSON object with the following keys: "
     "invoice_number, date, gstin, seller_name, buyer_name, buyer_gstin, "
-    "total_gross_worth, cgst, sgst, igst, place_of_supply, expense_ledger, tds. "
-    "Use DD/MM/YYYY for dates. Use only values shown in the invoice. "
-    "Return 'NOT AN INVOICE' if clearly not one. "
-    "If a value is not available, use null. "
+    "taxable_amount, cgst, sgst, igst, place_of_supply, expense_ledger, tds. "
+    "Important: 'taxable_amount' should be the amount BEFORE taxes (the taxable value). "
+    "The total amount should be calculated as taxable_amount + cgst + sgst + igst. "
     "For expense_ledger, classify the nature of expense and suggest an applicable ledger type "
     "(e.g., 'Office Supplies', 'Professional Fees', 'Software Subscription'). "
-    "For tds, determine TDS applicability (e.g., 'Yes - Section 194J', 'No', 'Uncertain')."
+    "For tds, determine TDS applicability and section if possible (e.g., 'Yes - Section 194J', 'No', 'Uncertain'). "
+    "Use DD/MM/YYYY for dates. Use only values shown in the invoice. "
+    "Return 'NOT AN INVOICE' if clearly not one. "
+    "If a value is not available, use null."
 )
 
 uploaded_files = st.file_uploader("📤 Upload scanned invoice PDFs", type=["pdf"], accept_multiple_files=True)
@@ -172,7 +212,7 @@ if uploaded_files:
                 response = client.chat.completions.create(
                     model="gpt-4o",
                     messages=chat_prompt,
-                    max_tokens=1000
+                    max_tokens=1200  # Increased tokens for better extraction
                 )
 
                 response_text = response.choices[0].message.content.strip()
@@ -190,32 +230,44 @@ if uploaded_files:
                             "Seller GSTIN": "",
                             "Buyer Name": "",
                             "Buyer GSTIN": "",
-                            "Total Gross Worth": 0.0,
+                            "Taxable Amount": 0.0,
                             "CGST": 0.0,
                             "SGST": 0.0,
                             "IGST": 0.0,
+                            "Total Amount": 0.0,
                             "Place of Supply": "",
                             "Expense Ledger": "",
                             "TDS": "",
+                            "TDS Rate": 0.0,
+                            "TDS Amount": 0.0,
+                            "Net Payable": 0.0,
                             "Narration": "This document was identified as not an invoice."
                         }
                     else:
                         raise ValueError("GPT returned non-JSON response")
                 else:
-                    # Create the result row with all fields
+                    # Extract and process data
                     invoice_number = raw_data.get("invoice_number", "")
                     date = raw_data.get("date", "")
                     seller_name = raw_data.get("seller_name", "")
                     seller_gstin = raw_data.get("gstin", "")
                     buyer_name = raw_data.get("buyer_name", "")
                     buyer_gstin = raw_data.get("buyer_gstin", "")
-                    total_gross_worth = safe_float(raw_data.get("total_gross_worth", 0.0))
+                    taxable_amount = safe_float(raw_data.get("taxable_amount", 0.0))
                     cgst = safe_float(raw_data.get("cgst", 0.0))
                     sgst = safe_float(raw_data.get("sgst", 0.0))
                     igst = safe_float(raw_data.get("igst", 0.0))
                     place_of_supply = raw_data.get("place_of_supply", "")
                     expense_ledger = raw_data.get("expense_ledger", "")
-                    tds = raw_data.get("tds", "")
+                    tds_str = raw_data.get("tds", "")
+                    
+                    # Calculate total amount
+                    total_amount = taxable_amount + cgst + sgst + igst
+                    
+                    # Determine TDS rate
+                    tds_rate = determine_tds_rate(tds_str, expense_ledger)
+                    tds_amount = round(taxable_amount * tds_rate / 100, 2)
+                    net_payable = total_amount - tds_amount
                     
                     # Validate and clean GSTIN
                     if not is_valid_gstin(seller_gstin):
@@ -228,16 +280,18 @@ if uploaded_files:
                     except:
                         date = ""
                     
-                    # Create narration text (matching Gemini example format)
+                    # Create narration text
                     buyer_gstin_display = buyer_gstin or "N/A"
                     narration = (
                         f"Invoice {invoice_number} dated {date} "
                         f"was issued by {seller_name} (GSTIN: {seller_gstin}) "
                         f"to {buyer_name} (GSTIN: {buyer_gstin_display}), "
-                        f"with a total value of ₹{total_gross_worth:.2f}. "
-                        f"Taxes applied - CGST: ₹{cgst:.2f}, SGST: ₹{sgst:.2f}, IGST: ₹{igst:.2f}. "
+                        f"with taxable amount ₹{taxable_amount:,.2f}. "
+                        f"Taxes applied - CGST: ₹{cgst:,.2f}, SGST: ₹{sgst:,.2f}, IGST: ₹{igst:,.2f}. "
+                        f"Total Amount: ₹{total_amount:,.2f}. "
                         f"Place of supply: {place_of_supply or 'N/A'}. Expense: {expense_ledger or 'N/A'}. "
-                        f"TDS: {tds or 'N/A'}."
+                        f"TDS: {tds_str or 'N/A'} @ {tds_rate}% (₹{tds_amount:,.2f}). "
+                        f"Net Payable: ₹{net_payable:,.2f}."
                     )
                     
                     result_row = {
@@ -248,13 +302,17 @@ if uploaded_files:
                         "Seller GSTIN": seller_gstin,
                         "Buyer Name": buyer_name,
                         "Buyer GSTIN": buyer_gstin,
-                        "Total Gross Worth": total_gross_worth,
+                        "Taxable Amount": taxable_amount,
                         "CGST": cgst,
                         "SGST": sgst,
                         "IGST": igst,
+                        "Total Amount": total_amount,
                         "Place of Supply": place_of_supply,
                         "Expense Ledger": expense_ledger,
-                        "TDS": tds,
+                        "TDS": tds_str,
+                        "TDS Rate": tds_rate,
+                        "TDS Amount": tds_amount,
+                        "Net Payable": net_payable,
                         "Narration": narration
                     }
 
@@ -272,13 +330,17 @@ if uploaded_files:
                 "Seller GSTIN": "",
                 "Buyer Name": "",
                 "Buyer GSTIN": "",
-                "Total Gross Worth": 0.0,
+                "Taxable Amount": 0.0,
                 "CGST": 0.0,
                 "SGST": 0.0,
                 "IGST": 0.0,
+                "Total Amount": 0.0,
                 "Place of Supply": "",
                 "Expense Ledger": "",
                 "TDS": "",
+                "TDS Rate": 0.0,
+                "TDS Amount": 0.0,
+                "Net Payable": 0.0,
                 "Narration": f"Error processing file: {str(e)}"
             }
             st.session_state["processed_results"][file_name] = error_row
@@ -304,15 +366,17 @@ if results:
         df = pd.DataFrame(results)
         
         # Format currency columns
-        currency_cols = ["Total Gross Worth", "CGST", "SGST", "IGST"]
+        currency_cols = ["Taxable Amount", "CGST", "SGST", "IGST", "Total Amount", "TDS Amount", "Net Payable"]
         for col in currency_cols:
             df[f"{col} (₹)"] = df[col].apply(format_currency)
         
         # Reorder columns for better display
         display_cols = [
             "File Name", "Invoice Number", "Date", "Seller Name", "Seller GSTIN",
-            "Buyer Name", "Buyer GSTIN", "Total Gross Worth (₹)", "CGST (₹)", 
-            "SGST (₹)", "IGST (₹)", "Place of Supply", "Expense Ledger", "TDS", "Narration"
+            "Buyer Name", "Buyer GSTIN", "Taxable Amount (₹)", "CGST (₹)", 
+            "SGST (₹)", "IGST (₹)", "Total Amount (₹)", "Place of Supply", 
+            "Expense Ledger", "TDS", "TDS Rate", "TDS Amount (₹)", 
+            "Net Payable (₹)", "Narration"
         ]
         
         st.dataframe(df[display_cols])
