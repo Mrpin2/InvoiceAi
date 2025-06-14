@@ -5,3 +5,4 @@ PyMuPDF
 pandas
 requests
 streamlit-lottie
+xlsxwriter
