@@ -237,7 +237,6 @@ if results:
     excel_buffer = io.BytesIO()
     with pd.ExcelWriter(excel_buffer, engine='xlsxwriter') as writer:
         df.to_excel(writer, index=False, sheet_name="Invoice Data")
-        writer.save()
     st.download_button(
         label="📥 Download Results as Excel",
         data=excel_buffer.getvalue(),
