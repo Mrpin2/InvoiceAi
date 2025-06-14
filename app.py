@@ -431,7 +431,7 @@ if results:
     if completed_json:
         st_lottie(completed_json, height=200, key="done_animation")
 
-    st.markdown("<h3 style='text-align: center;'>🎉 Yippie! All invoices Processed! 😊</h3>", unsafe_allow_html=True)
+    st.markdown("<h3 style='text-align: center;'>🎉 Yippie! All invoices processed with a smile 😊</h3>", unsafe_allow_html=True)
 
     # Create DataFrame
     try:
@@ -456,7 +456,7 @@ if results:
         
         st.dataframe(df[display_cols])
 
-        # Create download dataframe without status columns
+        # Create download dataframe with HSN/SAC column
         download_df = df[display_cols].copy()
         
         # CSV Download
