@@ -1,10 +1,10 @@
 streamlit
 Pillow
-PyMuPDF  # This is the actual package name for 'fitz'
+PyMuPDF
 pandas
 requests
 streamlit-lottie
 openai
+google-generativeai
 python-dateutil
-xlsxwriter # The package name is lowercase here, matching your usage of pd.ExcelWriter(engine='xlsxwriter')
-pytesseract # Required for the OCR fallback for GSTIN extraction
+xlsxwriter
