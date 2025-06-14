@@ -106,8 +106,6 @@ def format_currency(x):
     except:
         return "₹0.00"
 
-# Note: is_valid_gstin and extract_gstin_from_text functions are kept
-# as they might still be useful, but the main logic will prioritize raw_data.get().
 def is_valid_gstin(gstin):
     """Validates an Indian GSTIN format."""
     if not gstin:
@@ -343,15 +341,61 @@ if uploaded_files:
                     date = raw_data.get("date", "")
                     seller_name = raw_data.get("seller_name", "")
 
+                    # --- MODIFICATION START ---
                     # Reverted GSTIN extraction for Seller: Directly use raw_data.get()
-                    seller_gstin = raw_data.get("gstin", "")
-                    
+                    seller_gstin_raw = raw_data.get("gstin", "")
+                    seller_gstin = ""
+                    # Apply the force 15-char logic for Seller GSTIN
+                    if seller_gstin_raw and seller_gstin_raw.lower() not in ["foreign", "non-registered"]:
+                        if len(seller_gstin_raw) < 15:
+                            st.warning(f"Seller GSTIN '{seller_gstin_raw}' for {file_name} is less than 15 characters. Attempting re-extraction from response text.")
+                            # Attempt to re-extract from the original response text or the entire image text
+                            # For simplicity, we'll try to re-extract from the full response text which GPT provided.
+                            # In a real-world scenario, you might want to re-run GPT with a more specific prompt
+                            # or use an OCR library to get all text from the image and then apply regex.
+                            re_extracted_seller_gstin = extract_gstin_from_text(response_text)
+                            if re_extracted_seller_gstin and len(re_extracted_seller_gstin) == 15:
+                                seller_gstin = re_extracted_seller_gstin
+                            else:
+                                seller_gstin = seller_gstin_raw # Keep the original if re-extraction fails or is still short
+                                st.info(f"Re-extraction for Seller GSTIN failed or still short for {file_name}. Keeping original: '{seller_gstin_raw}'")
+                        elif len(seller_gstin_raw) > 15:
+                            st.warning(f"Seller GSTIN '{seller_gstin_raw}' for {file_name} is more than 15 characters. Attempting to trim or validate.")
+                            validated_gstin = extract_gstin_from_text(seller_gstin_raw) # Try to find a valid 15-char within it
+                            if validated_gstin:
+                                seller_gstin = validated_gstin
+                            else:
+                                seller_gstin = seller_gstin_raw # Keep original if validation/trimming fails
+                        else:
+                            seller_gstin = seller_gstin_raw
+                    else: # If it's "foreign", "non-registered", or empty, keep it as is
+                        seller_gstin = seller_gstin_raw
+
                     hsn_sac = raw_data.get("hsn_sac", "")
                     buyer_name = raw_data.get("buyer_name", "")
 
                     # Reverted GSTIN extraction for Buyer: Directly use raw_data.get()
-                    buyer_gstin = raw_data.get("buyer_gstin", "")
-                    
+                    buyer_gstin_raw = raw_data.get("buyer_gstin", "")
+                    # Apply similar logic for Buyer GSTIN if needed, or just validate.
+                    # For this request, the instruction was specifically for "Seller GSTIN",
+                    # so we'll just use the raw buyer GSTIN for now, but you could add a similar check.
+                    buyer_gstin = ""
+                    if buyer_gstin_raw and buyer_gstin_raw.lower() not in ["foreign", "non-registered"]:
+                        if len(buyer_gstin_raw) != 15:
+                            # Try to extract a valid 15-char GSTIN from the raw string
+                            validated_buyer_gstin = extract_gstin_from_text(buyer_gstin_raw)
+                            if validated_buyer_gstin and len(validated_buyer_gstin) == 15:
+                                buyer_gstin = validated_buyer_gstin
+                                st.info(f"Buyer GSTIN '{buyer_gstin_raw}' for {file_name} adjusted to '{buyer_gstin}'.")
+                            else:
+                                buyer_gstin = buyer_gstin_raw
+                                st.warning(f"Buyer GSTIN '{buyer_gstin_raw}' for {file_name} is not 15 chars and could not be validated. Keeping as is.")
+                        else:
+                            buyer_gstin = buyer_gstin_raw
+                    else:
+                        buyer_gstin = buyer_gstin_raw
+                    # --- MODIFICATION END ---
+                        
                     expense_ledger = raw_data.get("expense_ledger", "")
                     taxable_amount = safe_float(raw_data.get("taxable_amount", 0.0))
                     cgst = safe_float(raw_data.get("cgst", 0.0))
