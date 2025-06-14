@@ -41,7 +41,7 @@ st.markdown("<h2 style='text-align: center;'>📄 AI Invoice Extractor (OpenAI)<
 st.markdown("Upload scanned PDF invoices and extract structured finance data using GPT-4 Vision")
 st.markdown("---")
 
-# Define the fields we want to extract (This line was empty in your original code, filling it for completeness if you intended to use it later)
+# Define the fields we want to extract
 fields = [
     "invoice_number", "date", "gstin", "seller_name", "buyer_name", "buyer_gstin",
     "taxable_amount", "cgst", "sgst", "igst", "place_of_supply",
@@ -54,11 +54,11 @@ if "processed_results" not in st.session_state:
 if "processing_status" not in st.session_state:
     st.session_state["processing_status"] = {}
 if "summary_rows" not in st.session_state:
-    st.session_state["summary_rows"] = [] # Changed from empty dictionary to list for rows
+    st.session_state["summary_rows"] = []
 
 st.sidebar.header("🔐 AI Config")
 passcode = st.sidebar.text_input("Admin Passcode", type="password")
-admin_unlocked = passcode == "Essenbee"
+admin_unlocked = passcode == "Rajeev"
 
 openai_api_key = None
 if admin_unlocked:
@@ -272,7 +272,7 @@ if uploaded_files:
                     max_tokens=2000
                 )
 
-                response_text = response.choices[0].message.content.strip() # Corrected access to message content
+                response_text = response.choices[0].message.content.strip()
                 
                 # Try to extract JSON from the response
                 raw_data = extract_json_from_response(response_text)
@@ -281,8 +281,6 @@ if uploaded_files:
                     if "not an invoice" in response_text.lower():
                         result_row = {
                             "File Name": file_name,
-                            "TDS Applicability": "N/A", # Not applicable if not an invoice
-                            "TDS Section": None,
                             "Invoice Number": "NOT AN INVOICE",
                             "Date": "",
                             "Seller Name": "",
@@ -290,22 +288,23 @@ if uploaded_files:
                             "HSN/SAC": "",
                             "Buyer Name": "",
                             "Buyer GSTIN": "",
+                            "Expense Ledger": "", # Moved here for consistency
                             "Taxable Amount": 0.0,
                             "CGST": 0.0,
                             "SGST": 0.0,
                             "IGST": 0.0,
                             "Total Amount": 0.0,
+                            "TDS Applicability": "N/A", # Not applicable if not an invoice
+                            "TDS Section": None,
                             "TDS Rate": 0.0,
                             "TDS Amount": 0.0,
                             "Amount Payable": 0.0,
                             "Place of Supply": "",
-                            "Expense Ledger": "",
                             "TDS": "",
                             "Narration": "This document was identified as not an invoice."
                         }
                     else:
                         st.warning(f"GPT returned non-JSON response for {file_name}: {response_text}")
-                        # If not an invoice and not parsable JSON, treat as error
                         raise ValueError(f"GPT returned non-JSON response or unexpected format for {file_name}.")
                 else:
                     # Initialize all fields from raw_data, defaulting to empty string or 0.0 for robustness
@@ -313,22 +312,21 @@ if uploaded_files:
                     date = raw_data.get("date", "")
                     seller_name = raw_data.get("seller_name", "")
                     seller_gstin = raw_data.get("gstin", "")
-                    hsn_sac = raw_data.get("hsn_sac", "") # Get HSN/SAC, will be "" if null from GPT
+                    hsn_sac = raw_data.get("hsn_sac", "")
                     buyer_name = raw_data.get("buyer_name", "")
                     buyer_gstin = raw_data.get("buyer_gstin", "")
+                    expense_ledger = raw_data.get("expense_ledger", "") # Moved definition here
                     taxable_amount = safe_float(raw_data.get("taxable_amount", 0.0))
                     cgst = safe_float(raw_data.get("cgst", 0.0))
                     sgst = safe_float(raw_data.get("sgst", 0.0))
                     igst = safe_float(raw_data.get("igst", 0.0))
                     place_of_supply = raw_data.get("place_of_supply", "")
-                    expense_ledger = raw_data.get("expense_ledger", "")
                     tds_str = raw_data.get("tds", "")
                     
                     # Calculate derived fields
                     total_amount = taxable_amount + cgst + sgst + igst
                     tds_rate = determine_tds_rate(expense_ledger, tds_str)
                     
-                    # If tds_rate is 0, then tds_amount should also be 0
                     tds_amount = round(taxable_amount * tds_rate / 100, 2) if tds_rate > 0 else 0.0
                     
                     amount_payable = total_amount - tds_amount
@@ -340,21 +338,21 @@ if uploaded_files:
                     tds_applicability = "Uncertain"
                     if tds_rate > 0 or tds_amount > 0:
                         tds_applicability = "Yes"
-                    elif "no" in str(tds_str).lower(): # If GPT explicitly said "No" for TDS
+                    elif "no" in str(tds_str).lower():
                         tds_applicability = "No"
 
                     # Enhanced GSTIN handling
                     if seller_gstin:
                         seller_gstin = re.sub(r'[^A-Z0-9]', '', seller_gstin.upper())
                     if not is_valid_gstin(seller_gstin):
-                        fallback_gstin = extract_gstin_from_text(str(seller_name) + " " + str(seller_gstin)) # Search in seller name + current gstin
+                        fallback_gstin = extract_gstin_from_text(str(seller_name) + " " + str(seller_gstin))
                         if fallback_gstin:
                             seller_gstin = fallback_gstin
                             
                     if buyer_gstin:
                         buyer_gstin = re.sub(r'[^A-Z0-9]', '', buyer_gstin.upper())
                     if not is_valid_gstin(buyer_gstin):
-                        fallback_buyer_gstin = extract_gstin_from_text(str(buyer_name) + " " + str(buyer_gstin)) # Search in buyer name + current gstin
+                        fallback_buyer_gstin = extract_gstin_from_text(str(buyer_name) + " " + str(buyer_gstin))
                         if fallback_buyer_gstin:
                             buyer_gstin = fallback_buyer_gstin
                     
@@ -363,7 +361,7 @@ if uploaded_files:
                         parsed_date = parser.parse(str(date), dayfirst=True)
                         date = parsed_date.strftime("%d/%m/%Y")
                     except:
-                        date = "" # Keep date as blank if parsing fails
+                        date = ""
                         
                     # Create narration text
                     buyer_gstin_display = buyer_gstin or "N/A"
@@ -381,8 +379,6 @@ if uploaded_files:
                     
                     result_row = {
                         "File Name": file_name,
-                        "TDS Applicability": tds_applicability, # NEW COLUMN
-                        "TDS Section": tds_section, # NEW COLUMN
                         "Invoice Number": invoice_number,
                         "Date": date,
                         "Seller Name": seller_name,
@@ -390,17 +386,19 @@ if uploaded_files:
                         "HSN/SAC": hsn_sac,
                         "Buyer Name": buyer_name,
                         "Buyer GSTIN": buyer_gstin,
+                        "Expense Ledger": expense_ledger, # Moved position in result_row
                         "Taxable Amount": taxable_amount,
                         "CGST": cgst,
                         "SGST": sgst,
                         "IGST": igst,
                         "Total Amount": total_amount,
+                        "TDS Applicability": tds_applicability,
+                        "TDS Section": tds_section,
                         "TDS Rate": tds_rate,
                         "TDS Amount": tds_amount,
                         "Amount Payable": amount_payable,
                         "Place of Supply": place_of_supply,
-                        "Expense Ledger": expense_ledger,
-                        "TDS": tds_str, # Keep original 'tds' extracted by GPT if needed for debug
+                        "TDS": tds_str,
                         "Narration": narration
                     }
 
@@ -412,8 +410,6 @@ if uploaded_files:
         except Exception as e:
             error_row = {
                 "File Name": file_name,
-                "TDS Applicability": "Uncertain", # Mark as uncertain on error
-                "TDS Section": None,
                 "Invoice Number": "PROCESSING ERROR",
                 "Date": "",
                 "Seller Name": "",
@@ -421,23 +417,25 @@ if uploaded_files:
                 "HSN/SAC": "",
                 "Buyer Name": "",
                 "Buyer GSTIN": "",
+                "Expense Ledger": "", # Moved here for consistency
                 "Taxable Amount": 0.0,
                 "CGST": 0.0,
                 "SGST": 0.0,
                 "IGST": 0.0,
                 "Total Amount": 0.0,
+                "TDS Applicability": "Uncertain",
+                "TDS Section": None,
                 "TDS Rate": 0.0,
                 "TDS Amount": 0.0,
                 "Amount Payable": 0.0,
                 "Place of Supply": "",
-                "Expense Ledger": "",
                 "TDS": "",
                 "Narration": f"Error processing file: {str(e)}. Raw response: {response_text if 'response_text' in locals() else 'No response'}"
             }
             st.session_state["processed_results"][file_name] = error_row
             st.session_state["processing_status"][file_name] = "❌ Error"
             st.error(f"❌ Error processing {file_name}: {e}")
-            if response_text: # Check if response_text was assigned
+            if response_text:
                 st.text_area(f"Raw Output ({file_name})", response_text, height=200)
             else:
                 st.text_area(f"Raw Output ({file_name})", "No response received.", height=100)
@@ -453,14 +451,13 @@ if results:
     if completed_json:
         st_lottie(completed_json, height=200, key="done_animation")
 
-    st.markdown("<h3 style='text-align: center;'>🎉 Yippie! All invoices Processed! 😊</h3>", unsafe_allow_html=True)
+    st.markdown("<h3 style='text-align: center;'>🎉 Yippie! All invoices Processed!!! 😊</h3>", unsafe_allow_html=True)
 
     # Create DataFrame
     try:
         df = pd.DataFrame(results)
         
         # Define currency columns and their display names
-        # Make sure these columns exist before trying to format
         currency_cols_mapping = {
             "Taxable Amount": "Taxable Amount (₹)",
             "CGST": "CGST (₹)",
@@ -475,26 +472,18 @@ if results:
             if original_col in df.columns:
                 df[display_col] = df[original_col].apply(format_currency)
             else:
-                df[display_col] = "₹0.00" # Add column if missing
+                df[display_col] = "₹0.00"
 
         # Format 'TDS Rate' as percentage
         if 'TDS Rate' in df.columns:
-            # Ensure TDS Rate is numeric before formatting
             df['TDS Rate'] = pd.to_numeric(df['TDS Rate'], errors='coerce').fillna(0.0)
             df['TDS Rate (%)'] = df['TDS Rate'].apply(lambda x: f"{x:.1f}%" if x > 0 else "0.0%")
         else:
-            df['TDS Rate (%)'] = "0.0%" # Add column if missing
+            df['TDS Rate (%)'] = "0.0%"
 
         # Reorder columns for better display
-        # Removed "TDS" (original raw output) from display if you only want the processed ones
-        # and added the new columns in their desired positions
         display_cols = [
             "File Name",
-            "TDS Applicability", # NEW POSITION
-            "TDS Section",       # NEW POSITION
-            "TDS Rate (%)",      # This is the formatted column
-            "TDS Amount (₹)",    # This is the formatted column
-            "Amount Payable (₹)",# This is the formatted column
             "Invoice Number",
             "Date",
             "Seller Name",
@@ -502,14 +491,21 @@ if results:
             "HSN/SAC",
             "Buyer Name",
             "Buyer GSTIN",
+            "Expense Ledger", # MOVED HERE
             "Taxable Amount (₹)",
             "CGST (₹)",
             "SGST (₹)",
             "IGST (₹)",
             "Total Amount (₹)",
+            "TDS Applicability", # MOVED HERE
+            "TDS Section",       # MOVED HERE
+            "TDS Rate (%)",      # MOVED HERE
+            "TDS Amount (₹)",    # MOVED HERE
+            "Amount Payable (₹)",# MOVED HERE
             "Place of Supply",
-            "Expense Ledger",
             "Narration"
+            # The original 'TDS' column (tds_str from raw GPT output) is intentionally excluded from display_cols
+            # if you only want the refined 'TDS Applicability', 'TDS Section', etc.
         ]
         
         # Ensure all display_cols are present in df before selecting
@@ -517,7 +513,7 @@ if results:
 
         st.dataframe(
             df[actual_display_cols],
-            column_order=actual_display_cols, # Explicitly set column order
+            column_order=actual_display_cols,
             column_config={
                 "HSN/SAC": st.column_config.TextColumn(
                     "HSN/SAC",
@@ -538,7 +534,7 @@ if results:
             use_container_width=True
         )
 
-        # Create download dataframe without status columns (and internal calculation columns like raw 'TDS Rate', 'TDS Amount')
+        # Create download dataframe without status columns
         download_df = df[actual_display_cols].copy()
         
         # CSV Download
@@ -571,16 +567,15 @@ if results:
     from contextlib import redirect_stdout
     buffer = io.StringIO()
     with redirect_stdout(buffer):
-        df.info(verbose=True, show_counts=True) # verbose=True and show_counts=True ensures full detail
+        df.info(verbose=True, show_counts=True)
     st.text(buffer.getvalue())
 
     st.write("#### Null Counts per Column:")
-    st.dataframe(df.isnull().sum().to_frame(name='Null Count')) # Display null counts
+    st.dataframe(df.isnull().sum().to_frame(name='Null Count'))
 
-    # Check if any "Yes" in 'TDS Applicability' for balloons
     if 'TDS Applicability' in df.columns and any(df['TDS Applicability'] == "Yes"):
          st.balloons()
-    elif completed_count == total_files and completed_count > 0: # If all processed successfully, but no TDS, still show balloons
+    elif completed_count == total_files and completed_count > 0:
         st.balloons()
 else:
     st.info("Upload one or more scanned invoices to get started.")
