@@ -476,12 +476,12 @@ else: # Default behavior: user must enter keys manually
 st.markdown(
     f"""
     **Instructions:**
-    1. Select your preferred AI model ({model_choice}) in the sidebar.
-       💡 **Recommendation:** Use **Google Gemini** for **scanned or blurred documents**, and **OpenAI GPT** for **system-generated (clear) PDF invoices**.\n"
-    2. If you know the admin password, enter it to use pre-configured API keys from `Streamlit Secrets`.
-    3. Upload one or more PDF invoice files.
-    4. Click 'Process Invoices' to extract data.
-       The extracted data will be displayed in a table and available for download as Excel.
+    - Select your preferred AI model ({model_choice}) in the sidebar.
+      💡 **Recommendation:** Use **Google Gemini** for **scanned or blurred documents**, and **OpenAI GPT** for **system-generated (clear) PDF invoices**.\n"
+    - If you know the admin password, enter it to use pre-configured API keys from `Streamlit Secrets`.
+    - Upload one or more PDF invoice files.
+    - Click 'Process Invoices' to extract data.
+      The extracted data will be displayed in a table and available for download as Excel.
     """
 )
 
@@ -640,7 +640,7 @@ if st.button("🚀 Process Invoices", type="primary"):
                             f"from **{seller_name_display}** (GSTIN: {seller_gstin_display}) "
                             f"to **{buyer_name_display}** (Buyer GSTIN: {buyer_gstin_display}), "
                             f"Taxable: **{format_currency(taxable_amount)}**, Gross Total (Incl Tax): **{format_currency(gross_total_incl_tax)}**, "
-                            f"TDS Deducted: **{format_currency(tds_amount_extracted)}** (Rate: {tds_rate_extracted}{'%' if isinstance(tds_rate_extracted, (int, float)) else ''} Section: {tds_section_display}). Net Payable: **{format_currency(total_payable_after_tds)}**. "
+                            f"TDS Deducted: **{format_currency(tds_amount_extracted)}** (Rate: {tds_rate_extracted}{'%' if isinstance(tds_rate_extracted, (int, float)) else ''} Section: {tds_section_display}). Net Payable: **{format_currency(total_payable_after_tds)}}. "
                             f"Taxes: CGST {format_currency(cgst)}, SGST {format_currency(sgst)}, IGST {format_currency(igst)}. "
                             f"Place of Supply: {pos}. Expense Ledger: {expense_ledger_display}. "
                             f"RCM: {rcm_display}. HSN/SAC: {hsn_sac_display}."
