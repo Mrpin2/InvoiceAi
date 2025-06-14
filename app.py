@@ -41,7 +41,7 @@ st.markdown("<h2 style='text-align: center;'>📄 AI Invoice Extractor (OpenAI)<
 st.markdown("Upload scanned PDF invoices and extract structured finance data using GPT-4 Vision")
 st.markdown("---")
 
-# Define the fields we want to extract (matching the Gemini example structure)
+# Define the fields we want to extract
 fields = [
     "invoice_number", "date", "gstin", "seller_name", "buyer_name", "buyer_gstin",
     "taxable_amount", "cgst", "sgst", "igst", "place_of_supply", "expense_ledger", "tds"
@@ -93,21 +93,31 @@ def format_currency(x):
         return "₹0.00"
 
 def is_valid_gstin(gstin):
+    """Validate GSTIN format with more flexibility"""
     if not gstin:
         return False
-    return bool(re.match(r"^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z]{1}[1-9A-Z]{1}[Z]{1}[0-9A-Z]{1}$", gstin))
+        
+    # Clean the GSTIN: remove spaces, special characters, convert to uppercase
+    cleaned = re.sub(r'[^A-Z0-9]', '', gstin.upper())
+    
+    # GSTIN must be exactly 15 characters
+    if len(cleaned) != 15:
+        return False
+        
+    # Validate pattern: 2 digits + 10 alphanumeric + 1 letter + 1 alphanumeric + 1 letter
+    pattern = r"^\d{2}[A-Z0-9]{10}[A-Z]{1}[A-Z0-9]{1}[Z]{1}[A-Z0-9]{1}$"
+    return bool(re.match(pattern, cleaned))
+
+def extract_gstin_from_text(text):
+    """Try to extract GSTIN from any text using pattern matching"""
+    # Look for GSTIN pattern in the text
+    matches = re.findall(r'\b\d{2}[A-Z0-9]{10}[A-Z]{1}[A-Z0-9]{1}Z[A-Z0-9]{1}\b', text.upper())
+    if matches:
+        return matches[0]
+    return ""
 
 def determine_tds_rate(expense_ledger, tds_str=""):
-    """
-    Determine TDS rate based on expense ledger and TDS string
-    Common TDS rates in India:
-      - Professional services: 10% (Section 194J)
-      - Contracts: 1-2% (Section 194C)
-      - Commission/brokerage: 5% (Section 194H)
-      - Rent: 10% (Section 194I)
-      - Advertising: 1% (Section 194Q)
-      - Default: 0% (no TDS)
-    """
+    """Determine TDS rate based on expense ledger and TDS string"""
     # First check if TDS string contains a specific rate
     if tds_str and isinstance(tds_str, str):
         # Look for percentage in the TDS string
@@ -172,7 +182,7 @@ def extract_json_from_response(text):
     except Exception:
         return None
 
-# Updated prompt to match the Gemini example structure
+# Enhanced prompt with specific GSTIN instructions
 main_prompt = (
     "Extract structured invoice data as a JSON object with the following keys: "
     "invoice_number, date, gstin, seller_name, buyer_name, buyer_gstin, "
@@ -181,6 +191,13 @@ main_prompt = (
     "Use DD/MM/YYYY for dates. Use only values shown in the invoice. "
     "Return 'NOT AN INVOICE' if clearly not one. "
     "If a value is not available, use null. "
+    
+    "SPECIAL INSTRUCTIONS FOR GSTIN: "
+    "1. GSTIN is a 15-digit alphanumeric code (format: 22AAAAA0000A1Z5) "
+    "2. It's usually located near the seller's name or address "
+    "3. If you can't find GSTIN in the dedicated field, look in the seller details section "
+    "4. GSTIN might be labeled as 'GSTIN', 'GST No.', or 'GST Number' "
+    
     "For expense_ledger, classify the nature of expense and suggest an applicable ledger type "
     "(e.g., 'Office Supplies', 'Professional Fees', 'Software Subscription'). "
     "For tds, determine TDS applicability (e.g., 'Yes - Section 194J', 'No', 'Uncertain')."
@@ -219,7 +236,7 @@ if uploaded_files:
                 base64_image = base64.b64encode(img_buf.read()).decode()
 
                 chat_prompt = [
-                    {"role": "system", "content": "You are a finance assistant specializing in Indian invoices."},
+                    {"role": "system", "content": "You are a finance assistant specializing in Indian invoices. Pay special attention to GSTIN extraction."},
                     {"role": "user", "content": [
                         {"type": "text", "text": main_prompt},
                         {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{base64_image}"}}
@@ -229,7 +246,7 @@ if uploaded_files:
                 response = client.chat.completions.create(
                     model="gpt-4o",
                     messages=chat_prompt,
-                    max_tokens=1200
+                    max_tokens=1500  # Increased for better extraction
                 )
 
                 response_text = response.choices[0].message.content.strip()
@@ -284,10 +301,37 @@ if uploaded_files:
                     tds_amount = round(taxable_amount * tds_rate / 100, 2)
                     amount_payable = total_amount - tds_amount
                     
-                    # Validate and clean GSTIN
-                    if not is_valid_gstin(seller_gstin):
-                        seller_gstin = "MISSING"
+                    # Enhanced GSTIN handling
+                    original_gstin = seller_gstin
+                    gstin_status = "VALID"
+                    
+                    # Clean and validate GSTIN
+                    if seller_gstin:
+                        # Clean GSTIN by removing spaces and special characters
+                        seller_gstin = re.sub(r'[^A-Z0-9]', '', seller_gstin.upper())
                         
+                        # Validate the cleaned GSTIN
+                        if not is_valid_gstin(seller_gstin):
+                            gstin_status = "INVALID"
+                            
+                            # Try to extract GSTIN from seller name as fallback
+                            fallback_gstin = extract_gstin_from_text(seller_name)
+                            if fallback_gstin:
+                                seller_gstin = fallback_gstin
+                                gstin_status = "EXTRACTED_FROM_NAME"
+                    else:
+                        # Try to extract GSTIN from seller name if not provided
+                        fallback_gstin = extract_gstin_from_text(seller_name)
+                        if fallback_gstin:
+                            seller_gstin = fallback_gstin
+                            gstin_status = "EXTRACTED_FROM_NAME"
+                        else:
+                            gstin_status = "MISSING"
+                    
+                    # Final GSTIN validation
+                    if not is_valid_gstin(seller_gstin):
+                        gstin_status = "INVALID"
+                    
                     # Parse and format date
                     try:
                         parsed_date = parser.parse(str(date), dayfirst=True)
@@ -295,11 +339,11 @@ if uploaded_files:
                     except:
                         date = ""
                     
-                    # Create narration text
+                    # Create narration text with GSTIN status
                     buyer_gstin_display = buyer_gstin or "N/A"
                     narration = (
                         f"Invoice {invoice_number} dated {date} "
-                        f"was issued by {seller_name} (GSTIN: {seller_gstin}) "
+                        f"was issued by {seller_name} (GSTIN: {seller_gstin} - Status: {gstin_status}) "
                         f"to {buyer_name} (GSTIN: {buyer_gstin_display}), "
                         f"with a taxable amount of ₹{taxable_amount:,.2f}. "
                         f"Taxes applied - CGST: ₹{cgst:,.2f}, SGST: ₹{sgst:,.2f}, IGST: ₹{igst:,.2f}. "
@@ -309,12 +353,15 @@ if uploaded_files:
                         f"Amount Payable: ₹{amount_payable:,.2f}."
                     )
                     
+                    # Add GSTIN status to results
                     result_row = {
                         "File Name": file_name,
                         "Invoice Number": invoice_number,
                         "Date": date,
                         "Seller Name": seller_name,
                         "Seller GSTIN": seller_gstin,
+                        "GSTIN Status": gstin_status,
+                        "Original GSTIN": original_gstin,
                         "Buyer Name": buyer_name,
                         "Buyer GSTIN": buyer_gstin,
                         "Taxable Amount": taxable_amount,
@@ -336,6 +383,10 @@ if uploaded_files:
                 completed_count += 1
                 st.success(f"{file_name}: ✅ Done")
 
+                # Show GSTIN extraction details
+                if gstin_status != "VALID":
+                    st.warning(f"GSTIN Status: {gstin_status}")
+
         except Exception as e:
             error_row = {
                 "File Name": file_name,
@@ -343,6 +394,8 @@ if uploaded_files:
                 "Date": "",
                 "Seller Name": "",
                 "Seller GSTIN": "",
+                "GSTIN Status": "",
+                "Original GSTIN": "",
                 "Buyer Name": "",
                 "Buyer GSTIN": "",
                 "Taxable Amount": 0.0,
@@ -390,9 +443,9 @@ if results:
         
         # Reorder columns for better display
         display_cols = [
-            "File Name", "Invoice Number", "Date", "Seller Name", "Seller GSTIN",
-            "Buyer Name", "Buyer GSTIN", "Taxable Amount (₹)", "CGST (₹)", 
-            "SGST (₹)", "IGST (₹)", "Total Amount (₹)", "TDS Rate (%)", 
+            "File Name", "Invoice Number", "Date", "Seller Name", "Seller GSTIN", 
+            "GSTIN Status", "Buyer Name", "Buyer GSTIN", "Taxable Amount (₹)", 
+            "CGST (₹)", "SGST (₹)", "IGST (₹)", "Total Amount (₹)", "TDS Rate (%)", 
             "TDS Amount (₹)", "Amount Payable (₹)", "Place of Supply", 
             "Expense Ledger", "TDS", "Narration"
         ]
