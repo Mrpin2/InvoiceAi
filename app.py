@@ -62,9 +62,10 @@ admin_unlocked = passcode == "Essenbee"
 openai_api_key = None
 if admin_unlocked:
     st.sidebar.success("🔓 Admin access granted.")
-    openai_api_key = st.secrets.get("OPENAI_API_KEY")
+    # Assuming OPENAI_API_KEY is correctly set in Streamlit Secrets
+    openai_api_key = st.secrets.get("OPENAI_API_KEY") 
     if not openai_api_key:
-        st.sidebar.error("OPENAI_API_KEY missing in secrets.")
+        st.sidebar.error("OPENAI_API_KEY missing in Streamlit secrets.")
         st.stop()
 else:
     openai_api_key = st.sidebar.text_input("🔑 Enter your OpenAI API Key", type="password")
@@ -72,6 +73,7 @@ else:
         st.sidebar.warning("Please enter a valid API key to continue.")
         st.stop()
 
+# Initialize OpenAI client after API key is confirmed
 client = OpenAI(api_key=openai_api_key)
 
 def convert_pdf_first_page(pdf_bytes):
@@ -185,30 +187,33 @@ def extract_json_from_response(text):
 
 # Enhanced prompt with specific GSTIN and HSN/SAC instructions
 main_prompt = (
-    "Extract structured invoice data as a JSON object with the following keys: "
-    "invoice_number, date, gstin, seller_name, buyer_name, buyer_gstin, "
+    "You are an expert at extracting structured data from Indian invoices. "
+    "Your task is to extract information into a JSON object with the following keys. "
+    "If a key's value is not explicitly present or derivable from the invoice, use `null` for that value. "
+    "Keys to extract: invoice_number, date, gstin (seller's GSTIN), seller_name, buyer_name, buyer_gstin, "
     "taxable_amount, cgst, sgst, igst, place_of_supply, expense_ledger, tds, hsn_sac. "
-    "Important: 'taxable_amount' is the amount BEFORE taxes. "
-    "Use DD/MM/YYYY for dates. Use only values shown in the invoice. "
-    "Return 'NOT AN INVOICE' if clearly not one. "
-    "If a value is not available, use null. "
     
-    "SPECIAL INSTRUCTIONS FOR GSTIN: "
-    "1. GSTIN is a 15-digit alphanumeric code (format: 22AAAAA0000A1Z5) "
-    "2. It's usually located near the seller's name or address "
-    "3. If you can't find GSTIN in the dedicated field, look in the seller details section "
-    "4. GSTIN might be labeled as 'GSTIN', 'GST No.', or 'GST Number' "
+    "GUIDELINES FOR EXTRACTION:\n"
+    "- 'invoice_number': The unique identifier of the invoice.\n"
+    "- 'date': The invoice date in DD/MM/YYYY format.\n"
+    "- 'taxable_amount': This is the subtotal, the amount BEFORE any taxes (CGST, SGST, IGST) are applied.\n"
+    "- 'gstin': The GSTIN of the seller (the entity issuing the invoice).\n"
+    "- 'buyer_gstin': The GSTIN of the buyer (the entity receiving the invoice).\n"
+    "- 'hsn_sac': Crucial for Indian invoices. "
+    "  - HSN (Harmonized System of Nomenclature) is for goods.\n"
+    "  - SAC (Service Accounting Code) is for services.\n"
+    "  - **ONLY extract the HSN/SAC code if it is explicitly mentioned on the invoice.** "
+    "  - It is typically a 4, 6, or 8-digit numeric code, sometimes alphanumeric.\n"
+    "  - Look for labels like 'HSN Code', 'SAC Code', 'HSN/SAC', or just the code itself near item descriptions.\n"
+    "  - If multiple HSN/SAC codes are present for different line items, extract the one that appears most prominently, or the first one listed. If only one is present for the whole invoice, use that.\n"
+    "  - **If HSN/SAC is NOT found or explicitly stated, the value MUST be `null`. Do NOT guess or infer it.**\n"
     
-    "SPECIAL INSTRUCTIONS FOR HSN/SAC: "
-    "1. HSN (Harmonized System of Nomenclature) is for goods, SAC (Service Accounting Code) is for services. "
-    "2. It's typically a 4 or 6-digit number, sometimes 8 digits. "
-    "3. It's usually found near the item description or line items. "
-    "4. If multiple HSN/SAC codes are present, extract the most prominent or the first one listed. "
-    "5. If only one HSN/SAC is provided for the entire invoice, extract that. If not found, use null. "
-
-    "For expense_ledger, classify the nature of expense and suggest an applicable ledger type "
-    "(e.g., 'Office Supplies', 'Professional Fees', 'Software Subscription'). "
-    "For tds, determine TDS applicability (e.g., 'Yes - Section 194J', 'No', 'Uncertain')."
+    "- 'expense_ledger': Classify the nature of expense and suggest a suitable ledger type "
+    "  (e.g., 'Office Supplies', 'Professional Fees', 'Software Subscription', 'Rent').\n"
+    "- 'tds': Determine TDS applicability. State 'Yes - Section [X]' if applicable with a section, 'No' if clearly not, or 'Uncertain' if unclear.\n"
+    
+    "Return 'NOT AN INVOICE' if the document is clearly not an invoice.\n"
+    "Ensure the JSON output is clean and directly parsable."
 )
 
 uploaded_files = st.file_uploader("📤 Upload scanned invoice PDFs", type=["pdf"], accept_multiple_files=True)
@@ -220,6 +225,7 @@ if uploaded_files:
 
     for idx, file in enumerate(uploaded_files):
         file_name = file.name
+        # Skip if already processed
         if file_name in st.session_state["processed_results"]:
             continue
 
@@ -254,7 +260,7 @@ if uploaded_files:
                 response = client.chat.completions.create(
                     model="gpt-4o",
                     messages=chat_prompt,
-                    max_tokens=2000  # Increased for better extraction
+                    max_tokens=2000
                 )
 
                 response_text = response.choices[0].message.content.strip()
@@ -270,7 +276,7 @@ if uploaded_files:
                             "Date": "",
                             "Seller Name": "",
                             "Seller GSTIN": "",
-                            "HSN/SAC": "", # Added HSN/SAC to error row
+                            "HSN/SAC": "", # Explicitly ensure this key is present
                             "Buyer Name": "",
                             "Buyer GSTIN": "",
                             "Taxable Amount": 0.0,
@@ -287,14 +293,16 @@ if uploaded_files:
                             "Narration": "This document was identified as not an invoice."
                         }
                     else:
-                        raise ValueError("GPT returned non-JSON response")
+                        st.warning(f"GPT returned non-JSON response for {file_name}: {response_text}")
+                        # If not an invoice and not parsable JSON, treat as error
+                        raise ValueError(f"GPT returned non-JSON response or unexpected format for {file_name}.")
                 else:
-                    # Create the result row with all fields
+                    # Initialize all fields from raw_data, defaulting to empty string or 0.0 for robustness
                     invoice_number = raw_data.get("invoice_number", "")
                     date = raw_data.get("date", "")
                     seller_name = raw_data.get("seller_name", "")
                     seller_gstin = raw_data.get("gstin", "")
-                    hsn_sac = raw_data.get("hsn_sac", "") # Get HSN/SAC
+                    hsn_sac = raw_data.get("hsn_sac", "") # Get HSN/SAC, will be "" if null from GPT
                     buyer_name = raw_data.get("buyer_name", "")
                     buyer_gstin = raw_data.get("buyer_gstin", "")
                     taxable_amount = safe_float(raw_data.get("taxable_amount", 0.0))
@@ -312,48 +320,25 @@ if uploaded_files:
                     amount_payable = total_amount - tds_amount
                     
                     # Enhanced GSTIN handling
-                    original_gstin = seller_gstin
-                    gstin_status = "VALID"
-                    
-                    # Clean and validate GSTIN
                     if seller_gstin:
-                        # Clean GSTIN by removing spaces and special characters
                         seller_gstin = re.sub(r'[^A-Z0-9]', '', seller_gstin.upper())
-                        
-                        # Validate the cleaned GSTIN
-                        if not is_valid_gstin(seller_gstin):
-                            gstin_status = "INVALID"
-                            
-                            # Try to extract GSTIN from seller name as fallback
-                            fallback_gstin = extract_gstin_from_text(seller_name)
-                            if fallback_gstin:
-                                seller_gstin = fallback_gstin
-                                gstin_status = "EXTRACTED_FROM_NAME"
-                    else:
-                        # Try to extract GSTIN from seller name if not provided
+                    if not is_valid_gstin(seller_gstin):
                         fallback_gstin = extract_gstin_from_text(seller_name)
                         if fallback_gstin:
                             seller_gstin = fallback_gstin
-                            gstin_status = "EXTRACTED_FROM_NAME"
-                        else:
-                            gstin_status = "MISSING"
-                    
-                    # Final GSTIN validation
-                    if not is_valid_gstin(seller_gstin):
-                        gstin_status = "INVALID"
                     
                     # Parse and format date
                     try:
                         parsed_date = parser.parse(str(date), dayfirst=True)
                         date = parsed_date.strftime("%d/%m/%Y")
                     except:
-                        date = ""
+                        date = "" # Keep date as blank if parsing fails
                     
-                    # Create narration text with GSTIN status
+                    # Create narration text
                     buyer_gstin_display = buyer_gstin or "N/A"
                     narration = (
                         f"Invoice {invoice_number} dated {date} "
-                        f"was issued by {seller_name} (GSTIN: {seller_gstin}, HSN/SAC: {hsn_sac or 'N/A'}) " # Updated narration
+                        f"was issued by {seller_name} (GSTIN: {seller_gstin or 'N/A'}, HSN/SAC: {hsn_sac or 'N/A'}) "
                         f"to {buyer_name} (GSTIN: {buyer_gstin_display}), "
                         f"with a taxable amount of ₹{taxable_amount:,.2f}. "
                         f"Taxes applied - CGST: ₹{cgst:,.2f}, SGST: ₹{sgst:,.2f}, IGST: ₹{igst:,.2f}. "
@@ -363,14 +348,13 @@ if uploaded_files:
                         f"Amount Payable: ₹{amount_payable:,.2f}."
                     )
                     
-                    # Add GSTIN status to results (but not displayed)
                     result_row = {
                         "File Name": file_name,
                         "Invoice Number": invoice_number,
                         "Date": date,
                         "Seller Name": seller_name,
                         "Seller GSTIN": seller_gstin,
-                        "HSN/SAC": hsn_sac, # Added HSN/SAC to result row
+                        "HSN/SAC": hsn_sac, # This ensures the key is always here
                         "Buyer Name": buyer_name,
                         "Buyer GSTIN": buyer_gstin,
                         "Taxable Amount": taxable_amount,
@@ -399,7 +383,7 @@ if uploaded_files:
                 "Date": "",
                 "Seller Name": "",
                 "Seller GSTIN": "",
-                "HSN/SAC": "", # Added HSN/SAC to error row
+                "HSN/SAC": "", # Explicitly ensure this key is present in error cases too
                 "Buyer Name": "",
                 "Buyer GSTIN": "",
                 "Taxable Amount": 0.0,
@@ -413,12 +397,15 @@ if uploaded_files:
                 "Place of Supply": "",
                 "Expense Ledger": "",
                 "TDS": "",
-                "Narration": f"Error processing file: {str(e)}"
+                "Narration": f"Error processing file: {str(e)}. Raw response: {response_text if 'response_text' in locals() else 'No response'}"
             }
             st.session_state["processed_results"][file_name] = error_row
             st.session_state["processing_status"][file_name] = "❌ Error"
             st.error(f"❌ Error processing {file_name}: {e}")
-            st.text_area(f"Raw Output ({file_name})", response_text if 'response_text' in locals() else "No response", height=200)
+            if 'response_text' in locals():
+                st.text_area(f"Raw Output ({file_name})", response_text, height=200)
+            else:
+                st.text_area(f"Raw Output ({file_name})", "No response received.", height=100)
 
         finally:
             if temp_file_path and os.path.exists(temp_file_path):
