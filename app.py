@@ -81,7 +81,7 @@ def convert_pdf_first_page(pdf_bytes):
 
 def safe_float(x):
     try:
-        return float(str(x).replace(",", "").replace("₹", "").strip())
+        return float(str(x).replace(",", "").replace("\u20b9", "").strip())
     except:
         return 0.0
 
@@ -106,7 +106,7 @@ main_prompt = (
     "Use DD/MM/YYYY for dates. Use only values shown in the invoice. Return 'NOT AN INVOICE' if clearly not one."
 )
 
-uploaded_files = st.file_uploader("📤 Upload scanned invoice PDFs", type=["pdf"], accept_multiple_files=True)
+uploaded_files = st.file_uploader("📄 Upload scanned invoice PDFs", type=["pdf"], accept_multiple_files=True)
 
 if uploaded_files:
     st.session_state["files_uploaded"] = True
@@ -159,6 +159,8 @@ if uploaded_files:
                     end = response_text.rfind('}')
                     if start != -1 and end != -1:
                         raw_data = json.loads(response_text[start:end+1])
+                        if isinstance(raw_data, dict) and raw_data.get("Vendor Name", "").strip().upper() == "NOT AN INVOICE":
+                            raise ValueError("Detected as not an invoice")
                     else:
                         raise json.JSONDecodeError("Invalid JSON", response_text, 0)
 
@@ -178,7 +180,7 @@ if uploaded_files:
                         row[6] = "MISSING"
 
                     for i in [10, 11, 12, 13, 14]:
-                        if not re.match(r"^\d+(\.\d+)?$", str(row[i]).replace(",", "").replace("₹", "")):
+                        if not re.match(r"^\d+(\.\d+)?$", str(row[i]).replace(",", "").replace("\u20b9", "")):
                             row[i] = "0"
 
                     if "%" in str(row[9]):
@@ -238,13 +240,13 @@ if results:
     st.dataframe(df)
 
     csv_data = df.to_csv(index=False).encode("utf-8")
-    st.download_button("📥 Download Results as CSV", csv_data, "invoice_results.csv", "text/csv")
+    st.download_button("📅 Download Results as CSV", csv_data, "invoice_results.csv", "text/csv")
 
     excel_buffer = io.BytesIO()
     with pd.ExcelWriter(excel_buffer, engine='xlsxwriter') as writer:
         df.to_excel(writer, index=False, sheet_name="Invoice Data")
     st.download_button(
-        label="📥 Download Results as Excel",
+        label="📅 Download Results as Excel",
         data=excel_buffer.getvalue(),
         file_name="invoice_results.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
