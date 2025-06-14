@@ -16,7 +16,6 @@ import locale
 import re
 from dateutil import parser
 import json
-from contextlib import redirect_stdout
 
 locale.setlocale(locale.LC_ALL, '')
 
@@ -28,7 +27,7 @@ def load_lottie_json_safe(url):
     """Loads Lottie animation JSON safely from a URL."""
     try:
         r = requests.get(url)
-        r.raise_for_status() # Raise an HTTPError for bad responses (4xx or 5xx)
+        r.raise_for_status()
         return r.json()
     except requests.exceptions.RequestException as e:
         st.warning(f"Could not load Lottie animation from {url}: {e}")
@@ -39,7 +38,7 @@ completed_json = load_lottie_json_safe(completed_lottie)
 
 # Display initial Lottie animation if no files have been uploaded yet
 if "files_uploaded" not in st.session_state:
-    st.session_state["files_uploaded"] = False # Initialize to False
+    st.session_state["files_uploaded"] = False
 if not st.session_state["files_uploaded"]:
     if hello_json:
         st_lottie(hello_json, height=200, key="hello")
@@ -55,7 +54,18 @@ if "processing_status" not in st.session_state:
     st.session_state["processing_status"] = {}
 if "summary_rows" not in st.session_state:
     st.session_state["summary_rows"] = []
+if "process_triggered" not in st.session_state:
+    st.session_state["process_triggered"] = False
 
+# This key is only for the file uploader to force reset
+if "file_uploader_key" not in st.session_state:
+    st.session_state["file_uploader_key"] = 0
+
+# --- Placeholders for dynamic content, including the file uploader ---
+# This placeholder will be used to completely redraw the file uploader
+file_uploader_placeholder = st.empty()
+
+# --- Admin/API Key Config ---
 st.sidebar.header("🔐 AI Config")
 passcode = st.sidebar.text_input("Admin Passcode", type="password")
 admin_unlocked = passcode == "Rajeev"
@@ -63,7 +73,6 @@ admin_unlocked = passcode == "Rajeev"
 openai_api_key = None
 if admin_unlocked:
     st.sidebar.success("🔓 Admin access granted.")
-    # Assuming OPENAI_API_KEY is correctly set in Streamlit Secrets
     openai_api_key = st.secrets.get("OPENAI_API_KEY")
     if not openai_api_key:
         st.sidebar.error("OPENAI_API_KEY missing in Streamlit secrets.")
@@ -74,23 +83,21 @@ else:
         st.sidebar.warning("Please enter a valid API key to continue.")
         st.stop()
 
-# Initialize OpenAI client after API key is confirmed and available
 try:
     client = OpenAI(api_key=openai_api_key)
 except Exception as e:
     st.error(f"Failed to initialize OpenAI client. Check your API key: {e}")
     st.stop()
 
+# --- Functions remain the same ---
 def convert_pdf_first_page(pdf_bytes):
-    """Converts the first page of a PDF byte stream to a PIL Image."""
     doc = fitz.open(stream=pdf_bytes, filetype="pdf")
     page = doc.load_page(0)
-    pix = page.get_pixmap(dpi=300) # Render at 300 DPI for better OCR
+    pix = page.get_pixmap(dpi=300)
     img_bytes = pix.tobytes("png")
     return Image.open(io.BytesIO(img_bytes))
 
 def safe_float(x):
-    """Safely converts a value to a float, handling common currency symbols and commas."""
     try:
         cleaned = str(x).replace(",", "").replace("₹", "").replace("$", "").strip()
         return float(cleaned) if cleaned else 0.0
@@ -98,136 +105,54 @@ def safe_float(x):
         return 0.0
 
 def format_currency(x):
-    """Formats a numeric value as an Indian Rupee currency string."""
     try:
         if isinstance(x, str) and x.startswith('₹'):
-            return x # Already formatted
+            return x
         return f"₹{safe_float(x):,.2f}"
     except:
         return "₹0.00"
 
 def is_valid_gstin(gstin):
-    """Validates an Indian GSTIN format, strictly requiring 15 digits."""
     if not gstin:
         return False
-        
-    cleaned = re.sub(r'[^A-Z0-9]', '', gstin.upper()) # Remove non-alphanumeric, convert to uppercase
-        
+    cleaned = re.sub(r'[^A-Z0-9]', '', gstin.upper())
     if len(cleaned) != 15:
         return False
-        
-    # Standard GSTIN pattern: 2-digit state code, 10-char PAN, 1-char entity code, Z, 1-char checksum
     pattern = r"^\d{2}[A-Z0-9]{10}[A-Z]{1}[A-Z0-9]{1}[Z]{1}[A-Z0-9]{1}$"
     return bool(re.match(pattern, cleaned))
 
-def is_potential_gstin(gstin):
-    """
-    Checks if a string *looks like* a GSTIN (matches the pattern)
-    but is not necessarily 15 digits long. This is for identifying
-    malformed but patterned GSTINs.
-    """
-    if not gstin:
-        return False
-    
-    cleaned = re.sub(r'[^A-Z0-9]', '', gstin.upper())
-    
-    # Pattern to match the structure without strict length enforcement for the whole string
-    # We allow the final 3 characters to be flexible in quantity for the 'less than 15 digits' case
-    # This pattern captures the initial 12 characters accurately and then allows for variation
-    # However, for the purpose of identifying "malformed but patterned" we check if it starts like one
-    # and has some length. The primary is_valid_gstin already handles the strict 15.
-    # So, here we are looking for patterns that *start* like a GSTIN but are shorter.
-    # A simplified check: 2 digits, 10 alphanumeric. The last 3 are often '1ZA' or similar.
-    # So, we check for length between 5 and 14 and the general pattern.
-    if 5 <= len(cleaned) <= 14:
-        # A more relaxed pattern to catch partial or malformed ones.
-        # This regex looks for 2 digits, then at least 3 alphanumeric, and is case-insensitive.
-        # It's a heuristic to say "this *might* be a GSTIN based on its start."
-        pattern = r"^\d{2}[A-Z0-9]{3,12}$" # At least 5 total characters (2+3), up to 14 total (2+12)
-        return bool(re.match(pattern, cleaned))
-    return False
-
 def extract_gstin_from_text(text):
-    """
-    Extracts the first valid 15-digit GSTIN from text.
-    If no valid 15-digit GSTIN is found, it looks for potential (shorter) GSTINs
-    and returns the first one found along with a flag.
-    Returns (gstin_string, is_valid_15_digit).
-    """
     if not text:
-        return "", False
-    
-    cleaned_text = re.sub(r'[^A-Z0-9\s]', '', text.upper()) # Remove non-alphanumeric except spaces for broad matching
-    
-    # First, try to find a perfect 15-digit GSTIN
-    # Regex for 15-char: \d{2}[A-Z0-9]{10}[A-Z]{1}[A-Z0-9]{1}[Z]{1}[A-Z0-9]{1}
-    # More robust findall for patterns potentially separated by spaces, dashes etc.
-    # Capture groups help extract the clean GSTIN
-    
-    # Pattern to capture 15 alphanumeric characters that broadly look like a GSTIN
-    # We use a broader pattern here to capture potential candidates and then validate.
-    # This aims to catch things like "27ABCDE1234F1Z5"
-    gstin_candidates = re.findall(r'\b\d{2}[A-Z0-9]{10}[A-Z0-9]{3}\b', cleaned_text)
-    
-    for candidate in gstin_candidates:
-        if is_valid_gstin(candidate):
-            return candidate, True
-
-    # If no 15-digit valid GSTIN, look for shorter, patterned ones (5-14 digits)
-    # This regex is a bit more flexible to catch partials that still follow the initial structure.
-    # It tries to find sequences that start like GSTINs but might be truncated.
-    potential_gstin_candidates = re.findall(r'\b\d{2}[A-Z0-9]{3,12}\b', cleaned_text)
-
-    for candidate in potential_gstin_candidates:
-        # If it's not 15 digits but matches our potential pattern (e.g., 5-14 chars)
-        if len(candidate) < 15 and is_potential_gstin(candidate):
-            return candidate, False # Return the shorter one, and indicate it's not 15-digit valid
-            
-    return "", False # No GSTIN found or no valid/potential one
+        return ""
+    matches = re.findall(r'\b(\d{2}[A-Z0-9]{10}[A-Z]{1}[A-Z0-9]{1}Z[A-Z0-9]{1})\b', text.upper())
+    for match in matches:
+        if is_valid_gstin(match):
+            return match
+    return ""
 
 def determine_tds_rate(expense_ledger, tds_str="", place_of_supply=""):
-    """Determines TDS rate based on expense ledger, TDS string, and place of supply."""
-    # If place of supply is Foreign, TDS is generally not applicable
     if place_of_supply and place_of_supply.lower() == "foreign":
         return 0.0
-
-    # Prioritize specific rate mentioned in TDS string (e.g., "5%")
     if tds_str and isinstance(tds_str, str):
         match = re.search(r'(\d+(\.\d+)?)%', tds_str)
         if match:
             return float(match.group(1))
-            
-        # Check for common TDS section mentions within the TDS string
-        section_rates = {
-            "194j": 10.0,  # Professional services, Technical Services, Royalty, Fees for Directors
-            "194c": 1.0,   # Contracts (1% for company, 2% for individual/HUF) - using typical 1%
-            "194i": 10.0,  # Rent of plant/machinery/equipment (2%) or land/building/furniture (10%) - using typical 10%
-            "194h": 5.0,   # Commission or brokerage
-            "194q": 0.1    # Purchase of goods
-        }
+        section_rates = { "194j": 10.0, "194c": 1.0, "194i": 10.0, "194h": 5.0, "194q": 0.1 }
         for section, rate in section_rates.items():
             if section in tds_str.lower():
                 return rate
-            
-    # Fallback to determining based on expense ledger if no specific TDS info
     expense_ledger = expense_ledger.lower() if expense_ledger else ""
-    
     if "professional" in expense_ledger or "consultancy" in expense_ledger or "service" in expense_ledger:
-        return 10.0 # Common for 194J
-    
+        return 10.0
     if "contract" in expense_ledger or "work" in expense_ledger:
-        return 1.0 # Common for 194C
-    
+        return 1.0
     if "rent" in expense_ledger:
-        return 10.0 # Common for 194I
-    
-    return 0.0 # Default to 0 if no rule applies
+        return 10.0
+    return 0.0
 
 def determine_tds_section(expense_ledger, place_of_supply=""):
-    """Determines TDS section based on expense ledger and place of supply."""
     if place_of_supply and place_of_supply.lower() == "foreign":
-        return None # No specific section for foreign supply TDS
-
+        return None
     expense_ledger = expense_ledger.lower() if expense_ledger else ""
     if "professional" in expense_ledger or "consultancy" in expense_ledger or "service" in expense_ledger:
         return "194J"
@@ -235,29 +160,21 @@ def determine_tds_section(expense_ledger, place_of_supply=""):
         return "194C"
     elif "rent" in expense_ledger:
         return "194I"
-    # Add more rules as needed
     return None
 
 def extract_json_from_response(text):
-    """Robustly extracts a JSON object from a string, handling markdown code blocks."""
     try:
-        # Try to find a JSON code block first (most common and reliable for GPT)
         matches = re.findall(r'```json\s*({.*?})\s*```', text, re.DOTALL)
         if matches:
             return json.loads(matches[0])
-            
-        # If no code block, try to find the first '{' and last '}' and parse that substring
         start = text.find('{')
         end = text.rfind('}')
         if start != -1 and end != -1:
             return json.loads(text[start:end+1])
-            
-        # As a last resort, try parsing the entire text if it's purely JSON
         return json.loads(text)
     except Exception:
         return None
 
-# Enhanced prompt for GPT-4 Vision with detailed extraction guidelines
 main_prompt = (
     "You are an expert at extracting structured data from Indian invoices. "
     "Your task is to extract information into a JSON object with the following keys. "
@@ -269,8 +186,8 @@ main_prompt = (
     "- 'invoice_number': The unique identifier of the invoice. Extract as is.\n"
     "- 'date': The invoice date in DD/MM/YYYY format. If year is 2-digit, assume current century (e.g., 24 -> 2024).\n"
     "- 'taxable_amount': This is the subtotal, the amount BEFORE any taxes (CGST, SGST, IGST) are applied. Must be a number.\n"
-    "- 'gstin': The GSTIN of the seller (the entity issuing the invoice). Must be a 15-character alphanumeric string. Prioritize the GSTIN explicitly labeled as 'GSTIN' or associated with the seller's main details. If a GSTIN is found but is NOT 15 characters, *still extract it* but add a note to the 'narration' field indicating it's not 15 digits.\n"
-    "- 'buyer_gstin': The GSTIN of the buyer (the entity receiving the invoice). Must be a 15-character alphanumeric string. Prioritize the GSTIN explicitly labeled as 'Buyer GSTIN' or associated with the buyer's details. If a GSTIN is found but is NOT 15 characters, *still extract it* but add a note to the 'narration' field indicating it's not 15 digits.\n"
+    "- 'gstin': The GSTIN of the seller (the entity issuing the invoice). Must be a 15-character alphanumeric string. Prioritize the GSTIN explicitly labeled as 'GSTIN' or associated with the seller's main details.\n"
+    "- 'buyer_gstin': The GSTIN of the buyer (the entity receiving the invoice). Must be a 15-character alphanumeric string. Prioritize the GSTIN explicitly labeled as 'Buyer GSTIN' or associated with the buyer's details.\n"
     "- 'hsn_sac': Crucial for Indian invoices. "
     "  - HSN (Harmonized System of Nomenclature) is for goods."
     "  - SAC (Service Accounting Code) is for services."
@@ -301,43 +218,83 @@ main_prompt = (
     "Ensure the JSON output is clean and directly parsable."
 )
 
-uploaded_files = st.file_uploader("📤 Upload scanned invoice PDFs", type=["pdf"], accept_multiple_files=True)
+# Render the file uploader using the placeholder
+with file_uploader_placeholder.container():
+    uploaded_files = st.file_uploader(
+        "📤 Upload scanned invoice PDFs",
+        type=["pdf"],
+        accept_multiple_files=True,
+        key=f"file_uploader_{st.session_state.file_uploader_key}"
+    )
 
-if uploaded_files:
-    st.session_state["files_uploaded"] = True
-    total_files = len(uploaded_files)
-    # Use a progress bar to show overall completion
+    # Store uploaded files in session state to persist across reruns and allow clearing
+    if uploaded_files:
+        st.session_state["uploaded_files"] = uploaded_files
+        st.session_state["files_uploaded"] = True
+    else:
+        st.session_state["uploaded_files"] = []
+        st.session_state["files_uploaded"] = False
+
+# Conditional display of buttons after file upload
+if st.session_state["files_uploaded"] or st.session_state["processed_results"]:
+    col_process, col_spacer, col_clear = st.columns([1, 4, 1])
+    
+    with col_process:
+        if st.button("🚀 Process Invoices", help="Click to start extracting data from uploaded invoices."):
+            st.session_state["process_triggered"] = True
+            st.info("Processing initiated. Please wait...")
+
+    with col_clear:
+        if st.button("🗑️ Clear All Files & Reset", help="Click to clear all uploaded files and extracted data."):
+            # Increment key BEFORE clearing session_state to ensure uploader reset
+            st.session_state["file_uploader_key"] += 1
+            
+            # Clear all relevant session state variables explicitly
+            # It's safer to clear individual keys that you manage, rather than st.session_state.clear()
+            # especially when trying to maintain a widget's key for explicit reset.
+            st.session_state["files_uploaded"] = False
+            st.session_state["processed_results"] = {}
+            st.session_state["processing_status"] = {}
+            st.session_state["summary_rows"] = []
+            st.session_state["process_triggered"] = False
+            st.session_state["uploaded_files"] = [] # Explicitly empty this list
+
+            # Clear the placeholder to remove the old file uploader instance
+            file_uploader_placeholder.empty()
+            
+            # This rerun will redraw everything, including a *new* file uploader with the incremented key
+            st.rerun()
+
+# Only proceed with processing if files are uploaded AND the "Process Invoices" button was clicked
+if st.session_state["uploaded_files"] and st.session_state["process_triggered"]:
+    total_files = len(st.session_state["uploaded_files"])
     progress_text = st.empty()
     progress_bar = st.progress(0)
     
     completed_count = 0
 
-    for idx, file in enumerate(uploaded_files):
+    for idx, file in enumerate(st.session_state["uploaded_files"]):
         file_name = file.name
         progress_text.text(f"Processing file: {file_name} ({idx+1}/{total_files})")
         progress_bar.progress((idx + 1) / total_files)
 
-        # Skip if already processed (for re-runs or multiple uploads)
         if file_name in st.session_state["processed_results"]:
-            completed_count += 1 # Count already processed files as completed
+            completed_count += 1
             continue
 
         st.markdown(f"**Current File: {file_name}**")
         st.session_state["processing_status"][file_name] = "⏳ Pending..."
 
         temp_file_path = None
-        response_text = None # Initialize response_text for error reporting
+        response_text = None
         try:
-            # Save uploaded PDF to a temporary file
             with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
                 tmp.write(file.getvalue())
                 temp_file_path = tmp.name
 
-            # Read PDF data from the temporary file
             with open(temp_file_path, "rb") as f:
                 pdf_data = f.read()
                 
-            # Convert the first page of the PDF to an image for Vision API
             first_image = convert_pdf_first_page(pdf_data)
 
             with st.spinner(f"🧠 Extracting data from {file_name} using GPT-4 Vision..."):
@@ -346,7 +303,6 @@ if uploaded_files:
                 img_buf.seek(0)
                 base64_image = base64.b64encode(img_buf.read()).decode()
 
-                # Construct the chat prompt for OpenAI API
                 chat_prompt = [
                     {
                         "role": "user",
@@ -357,20 +313,16 @@ if uploaded_files:
                     }
                 ]
 
-                # Make the API call to GPT-4o
                 response = client.chat.completions.create(
                     model="gpt-4o",
                     messages=chat_prompt,
-                    max_tokens=2000 # Set a reasonable max token limit for the response
+                    max_tokens=1500
                 )
 
                 response_text = response.choices[0].message.content.strip()
-                
-                # Attempt to extract JSON from the GPT response
                 raw_data = extract_json_from_response(response_text)
                 
                 if raw_data is None:
-                    # Handle cases where GPT explicitly says "NOT AN INVOICE" or returns invalid JSON
                     if "not an invoice" in response_text.lower():
                         result_row = {
                             "File Name": file_name,
@@ -388,62 +340,27 @@ if uploaded_files:
                         st.warning(f"GPT returned non-JSON or unparsable response for {file_name}. See raw output below.")
                         raise ValueError(f"GPT returned non-JSON response or unexpected format for {file_name}.")
                 else:
-                    # Extract and process data from the raw JSON output
                     invoice_number = raw_data.get("invoice_number", "")
                     date = raw_data.get("date", "")
                     seller_name = raw_data.get("seller_name", "")
-
-                    # Process Seller GSTIN
-                    seller_gstin_raw = raw_data.get("gstin", "")
-                    seller_gstin = seller_gstin_raw
-                    seller_gstin_note = ""
-                    if seller_gstin_raw and not is_valid_gstin(seller_gstin_raw):
-                        if len(seller_gstin_raw) < 15 and is_potential_gstin(seller_gstin_raw):
-                            seller_gstin_note = f" (Seller GSTIN '{seller_gstin_raw}' is less than 15 digits)"
-                        elif len(seller_gstin_raw) > 15:
-                            seller_gstin_note = f" (Seller GSTIN '{seller_gstin_raw}' is more than 15 digits)"
-                        else:
-                            seller_gstin_note = f" (Seller GSTIN '{seller_gstin_raw}' is not a valid 15-digit format)"
-                    elif not seller_gstin_raw:
-                        seller_gstin_note = " (Seller GSTIN missing)"
-
+                    seller_gstin = raw_data.get("gstin", "")
                     hsn_sac = raw_data.get("hsn_sac", "")
                     buyer_name = raw_data.get("buyer_name", "")
-
-                    # Process Buyer GSTIN
-                    buyer_gstin_raw = raw_data.get("buyer_gstin", "")
-                    buyer_gstin = buyer_gstin_raw
-                    buyer_gstin_note = ""
-                    if buyer_gstin_raw and not is_valid_gstin(buyer_gstin_raw):
-                        if len(buyer_gstin_raw) < 15 and is_potential_gstin(buyer_gstin_raw):
-                            buyer_gstin_note = f" (Buyer GSTIN '{buyer_gstin_raw}' is less than 15 digits)"
-                        elif len(buyer_gstin_raw) > 15:
-                            buyer_gstin_note = f" (Buyer GSTIN '{buyer_gstin_raw}' is more than 15 digits)"
-                        else:
-                            buyer_gstin_note = f" (Buyer GSTIN '{buyer_gstin_raw}' is not a valid 15-digit format)"
-                    elif not buyer_gstin_raw:
-                        buyer_gstin_note = " (Buyer GSTIN missing)"
-                    
+                    buyer_gstin = raw_data.get("buyer_gstin", "")
                     expense_ledger = raw_data.get("expense_ledger", "")
                     taxable_amount = safe_float(raw_data.get("taxable_amount", 0.0))
                     cgst = safe_float(raw_data.get("cgst", 0.0))
                     sgst = safe_float(raw_data.get("sgst", 0.0))
                     igst = safe_float(raw_data.get("igst", 0.0))
                     place_of_supply = raw_data.get("place_of_supply", "")
-                    tds_str = raw_data.get("tds", "") # Raw TDS string from GPT
+                    tds_str = raw_data.get("tds", "")
 
-                    # Calculate derived fields and determine TDS applicability
                     total_amount = taxable_amount + cgst + sgst + igst
-                    
-                    # Pass place_of_supply to TDS functions for conditional logic
                     tds_rate = determine_tds_rate(expense_ledger, tds_str, place_of_supply)
                     tds_section = determine_tds_section(expense_ledger, place_of_supply)
-                    
                     tds_amount = round(taxable_amount * tds_rate / 100, 2) if tds_rate > 0 else 0.0
-                    
                     amount_payable = total_amount - tds_amount
                     
-                    # Determine TDS Applicability based on calculated rate and place of supply
                     tds_applicability = "Uncertain"
                     if place_of_supply and place_of_supply.lower() == "foreign":
                         tds_applicability = "No"
@@ -452,19 +369,17 @@ if uploaded_files:
                     elif "no" in str(tds_str).lower():
                         tds_applicability = "No"
 
-                    # Parse and format date to consistent DD/MM/YYYY
                     try:
                         parsed_date = parser.parse(str(date), dayfirst=True)
                         date = parsed_date.strftime("%d/%m/%Y")
                     except:
-                        date = "" # Keep blank if parsing fails
+                        date = ""
                         
-                    # Construct a detailed narration for the invoice
                     buyer_gstin_display = buyer_gstin or "N/A"
                     narration = (
                         f"Invoice {invoice_number or 'N/A'} dated {date or 'N/A'} "
-                        f"was issued by {seller_name or 'N/A'} (GSTIN: {seller_gstin or 'N/A'}{seller_gstin_note}, HSN/SAC: {hsn_sac or 'N/A'}) "
-                        f"to {buyer_name or 'N/A'} (GSTIN: {buyer_gstin_display}{buyer_gstin_note}), "
+                        f"was issued by {seller_name or 'N/A'} (GSTIN: {seller_gstin or 'N/A'}, HSN/SAC: {hsn_sac or 'N/A'}) "
+                        f"to {buyer_name or 'N/A'} (GSTIN: {buyer_gstin_display}), "
                         f"with a taxable amount of ₹{taxable_amount:,.2f}. "
                         f"Taxes applied - CGST: ₹{cgst:,.2f}, SGST: ₹{sgst:,.2f}, IGST: ₹{igst:,.2f}. "
                         f"Total Amount: ₹{total_amount:,.2f}. "
@@ -473,7 +388,6 @@ if uploaded_files:
                         f"Amount Payable: ₹{amount_payable:,.2f}."
                     )
                     
-                    # Store the structured result for the current file
                     result_row = {
                         "File Name": file_name,
                         "Invoice Number": invoice_number,
@@ -495,7 +409,7 @@ if uploaded_files:
                         "TDS Amount": tds_amount,
                         "Amount Payable": amount_payable,
                         "Place of Supply": place_of_supply,
-                        "TDS": tds_str, # Keep raw TDS string for debugging if needed
+                        "TDS": tds_str,
                         "Narration": narration
                     }
 
@@ -505,7 +419,6 @@ if uploaded_files:
                 st.success(f"{file_name}: ✅ Done")
 
         except Exception as e:
-            # Handle any errors during processing gracefully
             error_row = {
                 "File Name": file_name,
                 "Invoice Number": "PROCESSING ERROR",
@@ -527,103 +440,55 @@ if uploaded_files:
                 st.text_area(f"Raw Output ({file_name}) - Error Details", "No response received from GPT.", height=100)
 
         finally:
-            # Clean up temporary PDF file
             if temp_file_path and os.path.exists(temp_file_path):
                 os.unlink(temp_file_path)
     
-    # After all files are processed, clear progress bar and text
     progress_bar.empty()
     progress_text.empty()
 
-
-# Get all processed results to display
 results = list(st.session_state["processed_results"].values())
 
-if results:
-    # Display completion animation
+if results and st.session_state.get("process_triggered", False):
     if completed_json:
         st_lottie(completed_json, height=200, key="done_animation")
 
     st.markdown("<h3 style='text-align: center;'>🎉 Yippie! All invoices Processed!!! 😊</h3>", unsafe_allow_html=True)
 
-    # Create DataFrame from processed results
     try:
         df = pd.DataFrame(results)
         
-        # Define currency columns and their display names for formatting
         currency_cols_mapping = {
-            "Taxable Amount": "Taxable Amount (₹)",
-            "CGST": "CGST (₹)",
-            "SGST": "SGST (₹)",
-            "IGST": "IGST (₹)",
-            "Total Amount": "Total Amount (₹)",
-            "TDS Amount": "TDS Amount (₹)",
+            "Taxable Amount": "Taxable Amount (₹)", "CGST": "CGST (₹)", "SGST": "SGST (₹)",
+            "IGST": "IGST (₹)", "Total Amount": "Total Amount (₹)", "TDS Amount": "TDS Amount (₹)",
             "Amount Payable": "Amount Payable (₹)"
         }
-        
         for original_col, display_col in currency_cols_mapping.items():
             if original_col in df.columns:
                 df[display_col] = df[original_col].apply(format_currency)
             else:
-                df[display_col] = "₹0.00" # Ensure column exists even if all values were 0 initially
+                df[display_col] = "₹0.00"
 
-        # Format 'TDS Rate' as percentage
         if 'TDS Rate' in df.columns:
             df['TDS Rate'] = pd.to_numeric(df['TDS Rate'], errors='coerce').fillna(0.0)
             df['TDS Rate (%)'] = df['TDS Rate'].apply(lambda x: f"{x:.1f}%" if x > 0 else "0.0%")
         else:
             df['TDS Rate (%)'] = "0.0%"
 
-        # Define the desired order of columns for display
         display_cols = [
-            "File Name",
-            "Invoice Number",
-            "Date",
-            "Seller Name",
-            "Seller GSTIN",
-            "HSN/SAC",
-            "Buyer Name",
-            "Buyer GSTIN",
-            "Expense Ledger",
-            "Taxable Amount (₹)",
-            "CGST (₹)",
-            "SGST (₹)",
-            "IGST (₹)",
-            "Total Amount (₹)",
-            "TDS Applicability",
-            "TDS Section",
-            "TDS Rate (%)",
-            "TDS Amount (₹)",
-            "Amount Payable (₹)",
-            "Place of Supply",
-            "Narration"
-            # The original 'TDS' column (tds_str from raw GPT output) is intentionally excluded from display_cols
+            "File Name", "Invoice Number", "Date", "Seller Name", "Seller GSTIN", "HSN/SAC",
+            "Buyer Name", "Buyer GSTIN", "Expense Ledger", "Taxable Amount (₹)", "CGST (₹)",
+            "SGST (₹)", "IGST (₹)", "Total Amount (₹)", "TDS Applicability", "TDS Section",
+            "TDS Rate (%)", "TDS Amount (₹)", "Amount Payable (₹)", "Place of Supply", "Narration"
         ]
-        
-        # Filter display_cols to only include columns actually present in the DataFrame
         actual_display_cols = [col for col in display_cols if col in df.columns]
 
-        # Display the DataFrame in Streamlit
         st.dataframe(
             df[actual_display_cols],
             column_order=actual_display_cols,
             column_config={
-                "HSN/SAC": st.column_config.TextColumn(
-                    "HSN/SAC",
-                    help="Harmonized System of Nomenclature / Service Accounting Code",
-                    default="N/A"
-                ),
-                "TDS Section": st.column_config.TextColumn(
-                    "TDS Section",
-                    help="Applicable TDS Section (e.g., 194J)",
-                    default="N/A"
-                ),
-                "TDS Applicability": st.column_config.TextColumn(
-                    "TDS Applicability",
-                    help="Indicates if TDS is applicable (Yes/No/Uncertain)",
-                    default="Uncertain"
-                ),
-                # Ensure all currency columns are properly configured if you want specific display types
+                "HSN/SAC": st.column_config.TextColumn("HSN/SAC", help="Harmonized System of Nomenclature / Service Accounting Code", default="N/A"),
+                "TDS Section": st.column_config.TextColumn("TDS Section", help="Applicable TDS Section (e.g., 194J)", default="N/A"),
+                "TDS Applicability": st.column_config.TextColumn("TDS Applicability", help="Indicates if TDS is applicable (Yes/No/Uncertain)", default="Uncertain"),
                 "Taxable Amount (₹)": st.column_config.TextColumn("Taxable Amount (₹)"),
                 "CGST (₹)": st.column_config.TextColumn("CGST (₹)"),
                 "SGST (₹)": st.column_config.TextColumn("SGST (₹)"),
@@ -632,33 +497,25 @@ if results:
                 "TDS Amount (₹)": st.column_config.TextColumn("TDS Amount (₹)"),
                 "Amount Payable (₹)": st.column_config.TextColumn("Amount Payable (₹)")
             },
-            hide_index=True, # Hide the DataFrame index
+            hide_index=True,
             use_container_width=True
         )
 
-        # Prepare DataFrame for download (excluding formatting that might break CSV/Excel)
-        # We use the original numeric columns for download, then format for display only.
         download_df = df.copy()
-        # Drop the formatted currency/percentage columns and keep original numeric ones for download
         for original_col, display_col in currency_cols_mapping.items():
             if display_col in download_df.columns:
                 download_df = download_df.drop(columns=[display_col])
         if 'TDS Rate (%)' in download_df.columns:
             download_df = download_df.drop(columns=['TDS Rate (%)'])
-
-        # Filter download_df to include only relevant (unformatted) columns
-        download_cols_ordered = [col for col in display_cols if col not in currency_cols_mapping.values() and col != 'TDS Rate (%)']
         
-        # Add original numeric columns back for download, if they exist
+        download_cols_ordered = [col for col in display_cols if col not in currency_cols_mapping.values() and col != 'TDS Rate (%)']
         for col_name in ["Taxable Amount", "CGST", "SGST", "IGST", "Total Amount", "TDS Amount", "Amount Payable", "TDS Rate"]:
             if col_name in df.columns and col_name not in download_cols_ordered:
-                    download_cols_ordered.append(col_name) # Append if not already there, to maintain order
+                 download_cols_ordered.append(col_name)
 
-        # CSV Download
         csv_data = download_df[download_cols_ordered].to_csv(index=False).encode("utf-8")
         st.download_button("📥 Download Results as CSV", csv_data, "invoice_results.csv", "text/csv")
 
-        # Excel Download
         excel_buffer = io.BytesIO()
         try:
             with pd.ExcelWriter(excel_buffer, engine='xlsxwriter') as writer:
@@ -677,23 +534,13 @@ if results:
         st.write("Raw results data for debugging:")
         st.json(results)
 
-    st.markdown("---")
-    st.markdown("### Debugging Information:")
-    st.write("#### DataFrame Info (from the display DataFrame):")
-    buffer = io.StringIO()
-    # Ensure redirect_stdout is properly imported and used within a context
-    with redirect_stdout(buffer):
-        df.info(verbose=True, show_counts=True)
-    st.text(buffer.getvalue())
-
-    st.write("#### Null Counts per Column (from the display DataFrame):")
-    st.dataframe(df.isnull().sum().to_frame(name='Null Count'), use_container_width=True)
-
-    # Trigger balloons for success feedback
     if 'TDS Applicability' in df.columns and any(df['TDS Applicability'] == "Yes"):
-        st.balloons() # Nice animation for when TDS is applicable
+        st.balloons()
     elif completed_count == total_files and completed_count > 0:
-        st.balloons() # General success animation if all files processed
+        st.balloons()
 
 else:
-    st.info("Upload one or more scanned invoices to get started.")
+    if not st.session_state.get("uploaded_files") and not st.session_state.get("process_triggered", False) and not st.session_state.get("processed_results"):
+        st.info("Upload one or more scanned invoices to get started.")
+    elif st.session_state.get("uploaded_files") and not st.session_state.get("process_triggered", False):
+        st.info("Files uploaded. Click 'Process Invoices' to start extraction.")
