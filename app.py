@@ -81,7 +81,9 @@ def convert_pdf_first_page(pdf_bytes):
 
 def safe_float(x):
     try:
-        return float(str(x).replace(",", "").replace("₹", "").strip())
+        # Handle currency symbols, commas, and spaces
+        cleaned = str(x).replace(",", "").replace("₹", "").replace("$", "").strip()
+        return float(cleaned) if cleaned else 0.0
     except:
         return 0.0
 
@@ -92,13 +94,37 @@ def format_currency(x):
         return "₹0.00"
 
 def is_valid_gstin(gstin):
+    if not gstin:
+        return False
     return bool(re.match(r"^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z]{1}[1-9A-Z]{1}[Z]{1}[0-9A-Z]{1}$", gstin))
 
 def smart_tds_rate(section):
-    if "194j" in section.lower(): return 10
-    if "194c" in section.lower(): return 2
-    if "194h" in section.lower(): return 5
+    if not section or not isinstance(section, str):
+        return 0
+    section = section.lower()
+    if "194j" in section: return 10
+    if "194c" in section: return 2
+    if "194h" in section: return 5
     return 0
+
+def extract_json_from_response(text):
+    """Try to extract JSON from GPT response which might have extra text"""
+    try:
+        # Look for JSON code block
+        matches = re.findall(r'```json\s*({.*?})\s*```', text, re.DOTALL)
+        if matches:
+            return json.loads(matches[0])
+        
+        # Look for plain JSON
+        start = text.find('{')
+        end = text.rfind('}')
+        if start != -1 and end != -1:
+            return json.loads(text[start:end+1])
+        
+        # Try parsing the whole text
+        return json.loads(text)
+    except Exception:
+        return None
 
 main_prompt = (
     "Extract structured invoice data as a JSON object with keys: Vendor Name, Invoice No, GSTIN, HSN/SAC, Buyer Name, Place of Supply, "
@@ -124,10 +150,12 @@ if uploaded_files:
         temp_file_path = None
         try:
             with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
-                tmp.write(file.read())
+                tmp.write(file.getvalue())
                 temp_file_path = tmp.name
 
-            pdf_data = open(temp_file_path, "rb").read()
+            with open(temp_file_path, "rb") as f:
+                pdf_data = f.read()
+                
             first_image = convert_pdf_first_page(pdf_data)
 
             with st.spinner("🧠 Extracting data using GPT-4 Vision..."):
@@ -151,46 +179,55 @@ if uploaded_files:
                 )
 
                 response_text = response.choices[0].message.content.strip()
+                
+                # Try to extract JSON from the response
+                raw_data = extract_json_from_response(response_text)
+                
+                if raw_data is None:
+                    if "not an invoice" in response_text.lower():
+                        result_row = ["NOT AN INVOICE"] + ["-"] * (len(columns) - 1)
+                    else:
+                        raise ValueError("GPT returned non-JSON response")
+                else:
+                    row = [raw_data.get(field, "") for field in columns]
 
-                try:
-                    json_fields = columns
-                    raw_data = json.loads(response_text)
-                    row = [raw_data.get(field, "") for field in json_fields]
-
+                    # Validate and clean GSTIN
                     if not is_valid_gstin(row[2]):
                         row[2] = "MISSING"
 
+                    # Parse and format date
                     try:
-                        parsed_date = parser.parse(row[6], dayfirst=False)
+                        parsed_date = parser.parse(str(row[6]), dayfirst=True)
                         row[6] = parsed_date.strftime("%d/%m/%Y")
                     except:
                         row[6] = ""
 
-                    if len(row[7].strip()) < 3 or re.match(r"^\d{2}/\d{2}/\d{4}$", row[7]):
+                    # Validate expense ledger
+                    if len(str(row[7]).strip()) < 3 or re.match(r"^\d{2}/\d{2}/\d{4}$", str(row[7])):
                         row[7] = "MISSING"
 
-                    for i in [10, 11, 12, 13, 14]:
-                        if not re.match(r"^\d+(\.\d+)?$", str(row[i]).replace(",", "").replace("₹", "")):
-                            row[i] = "0"
+                    # Clean numeric fields
+                    for i in [9, 10, 11, 12, 13, 14]:
+                        if isinstance(row[i], str):
+                            # Remove percentage signs and currency symbols
+                            row[i] = str(row[i]).replace("%", "").replace("₹", "").replace(",", "").strip()
+                        # Ensure it's a valid number or set to 0
+                        try:
+                            float(row[i])
+                        except:
+                            row[i] = 0
 
-                    if "%" in str(row[9]):
-                        row[9] = str(row[9]).replace("%", "")
-
+                    # Create narration text
                     narration_text = (
                         f"Invoice {row[1]} dated {row[6]} was issued by {row[0]} (GSTIN: {row[2]}) "
-                        f"to {row[4]} (GSTIN: {row[4]}), with a total value of ₹{row[14]}. "
-                        f"Taxes applied - CGST: ₹{row[11] or '0.00'}, SGST: ₹{row[12] or '0.00'}, "
-                        f"IGST: ₹{row[13] or '0.00'}. " + (f"Place of supply: {row[5]}. " if row[5] else "") +
+                        f"to {row[4]}, with a total value of ₹{safe_float(row[14]):,.2f}. "
+                        f"Taxes applied - CGST: ₹{safe_float(row[11]):,.2f}, SGST: ₹{safe_float(row[12]):,.2f}, "
+                        f"IGST: ₹{safe_float(row[13]):,.2f}. " + 
+                        (f"Place of supply: {row[5]}. " if row[5] else "") +
                         f"Expense: {row[7]}. TDS: {row[17]}."
                     )
                     row[15] = narration_text
                     result_row = row
-
-                except json.JSONDecodeError:
-                    if "not an invoice" in response_text.lower():
-                        result_row = ["NOT AN INVOICE"] + ["-"] * (len(columns) - 1)
-                    else:
-                        raise
 
                 st.session_state["processed_results"][file_name] = result_row
                 st.session_state["processing_status"][file_name] = "✅ Done"
@@ -198,10 +235,10 @@ if uploaded_files:
                 st.success(f"{file_name}: ✅ Done")
 
         except Exception as e:
-            st.session_state["processed_results"][file_name] = ["NOT AN INVOICE"] + ["-"] * (len(columns) - 1)
+            st.session_state["processed_results"][file_name] = ["PROCESSING ERROR"] + [f"Error: {str(e)}"] + ["-"] * (len(columns) - 2)
             st.session_state["processing_status"][file_name] = "❌ Error"
             st.error(f"❌ Error processing {file_name}: {e}")
-            st.text_area(f"Raw Output ({file_name})", traceback.format_exc())
+            st.text_area(f"Raw Output ({file_name})", response_text if 'response_text' in locals() else "No response", height=200)
 
         finally:
             if temp_file_path and os.path.exists(temp_file_path):
@@ -214,35 +251,56 @@ if results:
 
     st.markdown("<h3 style='text-align: center;'>🎉 Yippie! All invoices processed with a smile 😊</h3>", unsafe_allow_html=True)
 
-    df = pd.DataFrame(results, columns=columns)
-    df.insert(0, "S. No", range(1, len(df) + 1))
+    # Create DataFrame with error handling
+    try:
+        df = pd.DataFrame(results, columns=columns)
+        df.insert(0, "S. No", range(1, len(df) + 1))
 
-    df["TDS Amount"] = df.apply(lambda row: round(safe_float(row["Basic Amount"]) * smart_tds_rate(str(row["TDS Applicable"])) / 100, 2), axis=1)
-    df["Gross Amount"] = df.apply(lambda row: sum([
-        safe_float(row["Basic Amount"]),
-        safe_float(row["CGST"]),
-        safe_float(row["SGST"]),
-        safe_float(row["IGST"])
-    ]), axis=1)
-    df["Net Payable"] = df["Gross Amount"] - df["TDS Amount"]
+        # Calculate additional columns with type safety
+        df["TDS Amount"] = df.apply(
+            lambda row: round(safe_float(row["Basic Amount"]) * smart_tds_rate(str(row["TDS Applicable"])) / 100, 2), 
+            axis=1
+        )
+        df["Gross Amount"] = df.apply(
+            lambda row: sum([
+                safe_float(row["Basic Amount"]),
+                safe_float(row["CGST"]),
+                safe_float(row["SGST"]),
+                safe_float(row["IGST"])
+            ]), 
+            axis=1
+        )
+        df["Net Payable"] = df["Gross Amount"] - df["TDS Amount"]
 
-    for col in ["Basic Amount", "CGST", "SGST", "IGST", "Total Payable", "TDS Amount", "Gross Amount", "Net Payable"]:
-        df[f"{col} (₹)"] = df[col].apply(format_currency)
+        # Create formatted currency columns
+        currency_cols = ["Basic Amount", "CGST", "SGST", "IGST", "Total Payable", "TDS Amount", "Gross Amount", "Net Payable"]
+        for col in currency_cols:
+            df[f"{col} (₹)"] = df[col].apply(format_currency)
 
-    st.dataframe(df)
+        st.dataframe(df)
 
-    csv_data = df.to_csv(index=False).encode("utf-8")
-    st.download_button("📥 Download Results as CSV", csv_data, "invoice_results.csv", "text/csv")
+        # CSV Download
+        csv_data = df.to_csv(index=False).encode("utf-8")
+        st.download_button("📥 Download Results as CSV", csv_data, "invoice_results.csv", "text/csv")
 
-    excel_buffer = io.BytesIO()
-    with pd.ExcelWriter(excel_buffer, engine='xlsxwriter') as writer:
-        df.to_excel(writer, index=False, sheet_name="Invoice Data")
-    st.download_button(
-        label="📥 Download Results as Excel",
-        data=excel_buffer.getvalue(),
-        file_name="invoice_results.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-    )
+        # Excel Download with error handling
+        excel_buffer = io.BytesIO()
+        try:
+            with pd.ExcelWriter(excel_buffer, engine='xlsxwriter') as writer:
+                df.to_excel(writer, index=False, sheet_name="Invoice Data")
+            st.download_button(
+                label="📥 Download Results as Excel",
+                data=excel_buffer.getvalue(),
+                file_name="invoice_results.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
+        except Exception as e:
+            st.error(f"Failed to create Excel file: {str(e)}")
+            
+    except Exception as e:
+        st.error(f"Error creating results table: {str(e)}")
+        st.write("Raw results data:")
+        st.json(results)
 
     st.markdown("---")
     if st.session_state.summary_rows:
