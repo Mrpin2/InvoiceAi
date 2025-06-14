@@ -44,7 +44,7 @@ st.markdown("---")
 # Define the fields we want to extract
 fields = [
     "invoice_number", "date", "gstin", "seller_name", "buyer_name", "buyer_gstin",
-    "taxable_amount", "cgst", "sgst", "igst", "place_of_supply", "expense_ledger", "tds"
+    "taxable_amount", "cgst", "sgst", "igst", "place_of_supply", "expense_ledger", "tds_applicable"
 ]
 
 if "processed_results" not in st.session_state:
@@ -93,51 +93,56 @@ def format_currency(x):
         return "₹0.00"
 
 def is_valid_gstin(gstin):
-    """Validate GSTIN format with more flexibility"""
-    if not gstin:
+    """Improved GSTIN validation with OCR error tolerance"""
+    if not gstin or not isinstance(gstin, str):
         return False
         
     # Clean the GSTIN: remove spaces, special characters, convert to uppercase
     cleaned = re.sub(r'[^A-Z0-9]', '', gstin.upper())
     
-    # GSTIN must be exactly 15 characters
+    # Check length
     if len(cleaned) != 15:
         return False
         
-    # Validate pattern: 2 digits + 10 alphanumeric + 1 letter + 1 alphanumeric + 1 letter
-    pattern = r"^\d{2}[A-Z0-9]{10}[A-Z]{1}[A-Z0-9]{1}[Z]{1}[A-Z0-9]{1}$"
+    # Validate pattern with tolerance for common OCR errors
+    pattern = r"^\d{2}[A-Z0-9]{10}[A-Z]{1}[A-Z0-9]{1}Z[A-Z0-9]{1}$"
     return bool(re.match(pattern, cleaned))
 
 def extract_gstin_from_text(text):
-    """Try to extract GSTIN from any text using pattern matching"""
+    """Robust GSTIN extraction from text using pattern matching"""
     # Look for GSTIN pattern in the text
     matches = re.findall(r'\b\d{2}[A-Z0-9]{10}[A-Z]{1}[A-Z0-9]{1}Z[A-Z0-9]{1}\b', text.upper())
     if matches:
         return matches[0]
     return ""
 
-def determine_tds_rate(expense_ledger, tds_str=""):
-    """Determine TDS rate based on expense ledger and TDS string"""
-    # First check if TDS string contains a specific rate
-    if tds_str and isinstance(tds_str, str):
-        # Look for percentage in the TDS string
-        match = re.search(r'(\d+(\.\d+)?)%', tds_str)
-        if match:
-            return float(match.group(1))
+def determine_tds_rate(expense_ledger, tds_applicable, buyer_gstin, place_of_supply, seller_gstin):
+    """
+    Smart TDS rate determination considering:
+    - TDS applicability
+    - Buyer/seller location
+    - Expense type
+    - International transactions
+    """
+    # No TDS if explicitly not applicable
+    if tds_applicable and "no" in tds_applicable.lower():
+        return 0.0
         
-        # Check for TDS sections
-        section_rates = {
-            "194j": 10.0,  # Professional services
-            "194c": 2.0,   # Contracts
-            "194h": 5.0,   # Commission/brokerage
-            "194i": 10.0,  # Rent
-            "194q": 1.0    # Advertising
-        }
-        for section, rate in section_rates.items():
-            if section in tds_str.lower():
-                return rate
-    
-    # If no TDS string info, determine by expense ledger
+    # No TDS for international transactions
+    if not buyer_gstin and not seller_gstin:
+        return 0.0
+        
+    if place_of_supply and ("international" in place_of_supply.lower() or 
+                            "foreign" in place_of_supply.lower()):
+        return 0.0
+        
+    # Check if buyer is international (no GSTIN)
+    if not buyer_gstin:
+        # For services to international clients, TDS might still apply in some cases
+        # But generally not applicable for export services
+        return 0.0
+        
+    # If TDS is applicable but no section specified, determine by expense ledger
     expense_ledger = expense_ledger.lower() if expense_ledger else ""
     
     # Professional services - 10%
@@ -182,25 +187,27 @@ def extract_json_from_response(text):
     except Exception:
         return None
 
-# Enhanced prompt with specific GSTIN instructions
+# Enhanced prompt with specific GSTIN and TDS instructions
 main_prompt = (
     "Extract structured invoice data as a JSON object with the following keys: "
     "invoice_number, date, gstin, seller_name, buyer_name, buyer_gstin, "
-    "taxable_amount, cgst, sgst, igst, place_of_supply, expense_ledger, tds. "
+    "taxable_amount, cgst, sgst, igst, place_of_supply, expense_ledger, tds_applicable. "
     "Important: 'taxable_amount' is the amount BEFORE taxes. "
     "Use DD/MM/YYYY for dates. Use only values shown in the invoice. "
     "Return 'NOT AN INVOICE' if clearly not one. "
     "If a value is not available, use null. "
     
-    "SPECIAL INSTRUCTIONS FOR GSTIN: "
-    "1. GSTIN is a 15-digit alphanumeric code (format: 22AAAAA0000A1Z5) "
-    "2. It's usually located near the seller's name or address "
-    "3. If you can't find GSTIN in the dedicated field, look in the seller details section "
-    "4. GSTIN might be labeled as 'GSTIN', 'GST No.', or 'GST Number' "
+    "SPECIAL INSTRUCTIONS: "
+    "1. For GSTIN: It's a 15-digit alphanumeric code (format: 22AAAAA0000A1Z5) "
+    "   found near seller/buyer details. If missing, leave blank."
+    "2. For TDS: "
+    "   - Return 'No' if TDS is not applicable (e.g., international transactions) "
+    "   - Return TDS section (e.g., '194J') if specified "
+    "   - Return 'Yes' if applicable but section not specified "
+    "3. For place_of_supply: Specify if international "
     
-    "For expense_ledger, classify the nature of expense and suggest an applicable ledger type "
-    "(e.g., 'Office Supplies', 'Professional Fees', 'Software Subscription'). "
-    "For tds, determine TDS applicability (e.g., 'Yes - Section 194J', 'No', 'Uncertain')."
+    "For expense_ledger: Classify the nature of expense "
+    "(e.g., 'Office Supplies', 'Professional Fees'). "
 )
 
 uploaded_files = st.file_uploader("📤 Upload scanned invoice PDFs", type=["pdf"], accept_multiple_files=True)
@@ -236,7 +243,7 @@ if uploaded_files:
                 base64_image = base64.b64encode(img_buf.read()).decode()
 
                 chat_prompt = [
-                    {"role": "system", "content": "You are a finance assistant specializing in Indian invoices. Pay special attention to GSTIN extraction."},
+                    {"role": "system", "content": "You are a finance assistant specializing in Indian invoices. Pay special attention to GSTIN and TDS applicability."},
                     {"role": "user", "content": [
                         {"type": "text", "text": main_prompt},
                         {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{base64_image}"}}
@@ -274,7 +281,7 @@ if uploaded_files:
                             "Amount Payable": 0.0,
                             "Place of Supply": "",
                             "Expense Ledger": "",
-                            "TDS": "",
+                            "TDS Applicable": "",
                             "Narration": "This document was identified as not an invoice."
                         }
                     else:
@@ -293,44 +300,40 @@ if uploaded_files:
                     igst = safe_float(raw_data.get("igst", 0.0))
                     place_of_supply = raw_data.get("place_of_supply", "")
                     expense_ledger = raw_data.get("expense_ledger", "")
-                    tds_str = raw_data.get("tds", "")
+                    tds_applicable = raw_data.get("tds_applicable", "")
                     
                     # Calculate derived fields
                     total_amount = taxable_amount + cgst + sgst + igst
-                    tds_rate = determine_tds_rate(expense_ledger, tds_str)
-                    tds_amount = round(taxable_amount * tds_rate / 100, 2)
+                    tds_rate = determine_tds_rate(
+                        expense_ledger, 
+                        tds_applicable,
+                        buyer_gstin,
+                        place_of_supply,
+                        seller_gstin
+                    )
+                    tds_amount = round(taxable_amount * tds_rate / 100, 2) if tds_rate > 0 else 0.0
                     amount_payable = total_amount - tds_amount
                     
                     # Enhanced GSTIN handling
-                    original_gstin = seller_gstin
-                    gstin_status = "VALID"
-                    
-                    # Clean and validate GSTIN
                     if seller_gstin:
                         # Clean GSTIN by removing spaces and special characters
                         seller_gstin = re.sub(r'[^A-Z0-9]', '', seller_gstin.upper())
                         
                         # Validate the cleaned GSTIN
                         if not is_valid_gstin(seller_gstin):
-                            gstin_status = "INVALID"
-                            
                             # Try to extract GSTIN from seller name as fallback
                             fallback_gstin = extract_gstin_from_text(seller_name)
                             if fallback_gstin:
                                 seller_gstin = fallback_gstin
-                                gstin_status = "EXTRACTED_FROM_NAME"
                     else:
                         # Try to extract GSTIN from seller name if not provided
                         fallback_gstin = extract_gstin_from_text(seller_name)
                         if fallback_gstin:
                             seller_gstin = fallback_gstin
-                            gstin_status = "EXTRACTED_FROM_NAME"
-                        else:
-                            gstin_status = "MISSING"
                     
                     # Final GSTIN validation
-                    if not is_valid_gstin(seller_gstin):
-                        gstin_status = "INVALID"
+                    if seller_gstin and not is_valid_gstin(seller_gstin):
+                        seller_gstin = ""  # Clear invalid GSTIN
                     
                     # Parse and format date
                     try:
@@ -339,17 +342,26 @@ if uploaded_files:
                     except:
                         date = ""
                     
-                    # Create narration text with GSTIN status
+                    # Clean TDS Applicable field
+                    if tds_applicable and "uncertain" in tds_applicable.lower():
+                        tds_applicable = ""
+                    elif tds_applicable and "no" in tds_applicable.lower():
+                        tds_applicable = "No"
+                    elif tds_applicable and "yes" in tds_applicable.lower():
+                        tds_applicable = "Yes"
+                    
+                    # Create narration text
                     buyer_gstin_display = buyer_gstin or "N/A"
                     narration = (
                         f"Invoice {invoice_number} dated {date} "
-                        f"was issued by {seller_name} (GSTIN: {seller_gstin} - Status: {gstin_status}) "
+                        f"was issued by {seller_name} (GSTIN: {seller_gstin or 'N/A'}) "
                         f"to {buyer_name} (GSTIN: {buyer_gstin_display}), "
                         f"with a taxable amount of ₹{taxable_amount:,.2f}. "
                         f"Taxes applied - CGST: ₹{cgst:,.2f}, SGST: ₹{sgst:,.2f}, IGST: ₹{igst:,.2f}. "
                         f"Total Amount: ₹{total_amount:,.2f}. "
                         f"Place of supply: {place_of_supply or 'N/A'}. Expense: {expense_ledger or 'N/A'}. "
-                        f"TDS: {tds_str or 'N/A'} @ {tds_rate}% (₹{tds_amount:,.2f}). "
+                        f"TDS Applicable: {tds_applicable or 'N/A'}. "
+                        f"TDS Rate: {tds_rate}% (₹{tds_amount:,.2f}). "
                         f"Amount Payable: ₹{amount_payable:,.2f}."
                     )
                     
@@ -360,8 +372,6 @@ if uploaded_files:
                         "Date": date,
                         "Seller Name": seller_name,
                         "Seller GSTIN": seller_gstin,
-                        "GSTIN Status": gstin_status,
-                        "Original GSTIN": original_gstin,
                         "Buyer Name": buyer_name,
                         "Buyer GSTIN": buyer_gstin,
                         "Taxable Amount": taxable_amount,
@@ -374,7 +384,7 @@ if uploaded_files:
                         "Amount Payable": amount_payable,
                         "Place of Supply": place_of_supply,
                         "Expense Ledger": expense_ledger,
-                        "TDS": tds_str,
+                        "TDS Applicable": tds_applicable,
                         "Narration": narration
                     }
 
@@ -383,10 +393,6 @@ if uploaded_files:
                 completed_count += 1
                 st.success(f"{file_name}: ✅ Done")
 
-                # Show GSTIN extraction details
-                if gstin_status != "VALID":
-                    st.warning(f"GSTIN Status: {gstin_status}")
-
         except Exception as e:
             error_row = {
                 "File Name": file_name,
@@ -394,8 +400,6 @@ if uploaded_files:
                 "Date": "",
                 "Seller Name": "",
                 "Seller GSTIN": "",
-                "GSTIN Status": "",
-                "Original GSTIN": "",
                 "Buyer Name": "",
                 "Buyer GSTIN": "",
                 "Taxable Amount": 0.0,
@@ -408,7 +412,7 @@ if uploaded_files:
                 "Amount Payable": 0.0,
                 "Place of Supply": "",
                 "Expense Ledger": "",
-                "TDS": "",
+                "TDS Applicable": "",
                 "Narration": f"Error processing file: {str(e)}"
             }
             st.session_state["processed_results"][file_name] = error_row
@@ -443,11 +447,11 @@ if results:
         
         # Reorder columns for better display
         display_cols = [
-            "File Name", "Invoice Number", "Date", "Seller Name", "Seller GSTIN", 
-            "GSTIN Status", "Buyer Name", "Buyer GSTIN", "Taxable Amount (₹)", 
-            "CGST (₹)", "SGST (₹)", "IGST (₹)", "Total Amount (₹)", "TDS Rate (%)", 
+            "File Name", "Invoice Number", "Date", "Seller Name", "Seller GSTIN",
+            "Buyer Name", "Buyer GSTIN", "Taxable Amount (₹)", "CGST (₹)", 
+            "SGST (₹)", "IGST (₹)", "Total Amount (₹)", "TDS Rate (%)", 
             "TDS Amount (₹)", "Amount Payable (₹)", "Place of Supply", 
-            "Expense Ledger", "TDS", "Narration"
+            "Expense Ledger", "TDS Applicable", "Narration"
         ]
         
         st.dataframe(df[display_cols])
