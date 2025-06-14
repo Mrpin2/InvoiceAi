@@ -219,12 +219,11 @@ if results:
 
     st.markdown("<h3 style='text-align: center;'>🎉 Yippie! All invoices processed with a smile 😊</h3>", unsafe_allow_html=True)
 
-    # Fixing mismatched row lengths
     sanitized_results = []
     for r in results:
         if len(r) == len(columns):
             sanitized_results.append(r)
-        elif len(r) == len(columns) + 1:  # remove filename
+        elif len(r) == len(columns) + 1:
             sanitized_results.append(r[1:])
         elif len(r) < len(columns):
             padded = r + ["-"] * (len(columns) - len(r))
@@ -235,7 +234,6 @@ if results:
     df = pd.DataFrame(sanitized_results, columns=columns)
     df.insert(0, "S. No", range(1, len(df) + 1))
 
-    # Display only columns defined in 'columns' list plus S. No
     display_columns = ["S. No"] + columns
     st.dataframe(df[display_columns])
 
