@@ -437,6 +437,9 @@ if results:
     try:
         df = pd.DataFrame(results)
         
+        # DEBUG: Show all columns to verify HSN/SAC is present
+        st.write("All available columns:", df.columns.tolist())
+        
         # Format currency columns
         currency_cols = ["Taxable Amount", "CGST", "SGST", "IGST", "Total Amount", "TDS Amount", "Amount Payable"]
         for col in currency_cols:
@@ -453,6 +456,10 @@ if results:
             "TDS Amount (₹)", "Amount Payable (₹)", "Place of Supply", 
             "Expense Ledger", "HSN/SAC", "TDS", "Narration"  # ADDED HSN/SAC
         ]
+        
+        # Ensure HSN/SAC column exists
+        if "HSN/SAC" not in df.columns:
+            df["HSN/SAC"] = "MISSING"
         
         st.dataframe(df[display_cols])
 
