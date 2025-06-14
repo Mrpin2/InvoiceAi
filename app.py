@@ -352,7 +352,7 @@ st.markdown("""
         font-family: 'Roboto', 'Helvetica Neue', Arial, sans-serif; 
     }
     .stAlert.info { 
-        background-color: #333333; /* Darker grey background */
+        background-color: #000000; /* Set to pure black */
     }
     .stAlert.success { 
         background-color: #e8f5e9; 
@@ -366,16 +366,17 @@ st.markdown("""
         background-color: #3b82f6 !important; 
     }
     
-    /* *** CRITICAL FIX for instruction text visibility *** */
-    /* Target paragraphs and list items directly inside the st.info alert */
-    .stAlert.info p, 
-    .stAlert.info li,
-    .stAlert.info div, /* Added div as a general container */
-    .stAlert.info div[data-testid="stMarkdownContainer"] li /* More specific for list items */
+    /* *** CRITICAL FIX for instruction text visibility (MORE AGGRESSIVE) *** */
+    .stAlert.info,
+    .stAlert.info * /* Target all direct and indirect children within the info alert */
     { 
-        color: #FFFFFF !important; /* White text for strong contrast */
-        font-weight: 500 !important; /* Make it a bit bolder */
-        text-shadow: none !important; /* Remove any potential text shadow */
+        color: #FFFFFF !important; /* Force white text */
+        text-shadow: none !important; /* Ensure no conflicting text shadows */
+    }
+    /* Explicitly target paragraph and list items just in case, with high specificity */
+    .stAlert.info p, 
+    .stAlert.info li {
+        color: #FFFFFF !important;
     }
 </style>
 """, unsafe_allow_html=True)
