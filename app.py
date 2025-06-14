@@ -375,7 +375,7 @@ st.markdown("""
         background-color: white;
         padding: 25px; /* Increased padding for better look */
         border-radius: 12px;
-        box-shadow: 0 4px 10px rgba(0, 0, 0, 0.08); /* Stronger subtle shadow */
+        box_shadow: 0 4px 10px rgba(0, 0, 0, 0.08); /* Stronger subtle shadow */
         margin-bottom: 25px; /* Space below this card */
         border: 1px solid #e0e0e0; /* Light border */
     }
@@ -384,7 +384,7 @@ st.markdown("""
         background-color: white;
         padding: 20px;
         border-radius: 12px;
-        box-shadow: 0 4px 10px rgba(0, 0, 0, 0.08);
+        box_shadow: 0 4px 10px rgba(0, 0, 0, 0.08);
         margin-bottom: 20px;
         border: 1px solid #e0e0e0;
     }
@@ -640,7 +640,7 @@ if st.button("🚀 Process Invoices", type="primary"):
                             f"from **{seller_name_display}** (GSTIN: {seller_gstin_display}) "
                             f"to **{buyer_name_display}** (Buyer GSTIN: {buyer_gstin_display}), "
                             f"Taxable: **{format_currency(taxable_amount)}**, Gross Total (Incl Tax): **{format_currency(gross_total_incl_tax)}**, "
-                            f"TDS Deducted: **{format_currency(tds_amount_extracted)}** (Rate: {tds_rate_extracted}{'%' if isinstance(tds_rate_extracted, (int, float)) else ''} Section: {tds_section_display}). Net Payable: **{format_currency(total_payable_after_tds)}}. "
+                            f"TDS Deducted: **{format_currency(tds_amount_extracted)}** (Rate: {tds_rate_extracted}{'%' if isinstance(tds_rate_extracted, (int, float)) else ''} Section: {tds_section_display}). Net Payable: **{format_currency(total_payable_after_tds)}**. "
                             f"Taxes: CGST {format_currency(cgst)}, SGST {format_currency(sgst)}, IGST {format_currency(igst)}. "
                             f"Place of Supply: {pos}. Expense Ledger: {expense_ledger_display}. "
                             f"RCM: {rcm_display}. HSN/SAC: {hsn_sac_display}."
