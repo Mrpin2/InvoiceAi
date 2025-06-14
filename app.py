@@ -1,4 +1,4 @@
-import streamlit as st
+import streamlit as st 
 st.set_page_config(layout="wide")  # MUST be first
 
 from PIL import Image
@@ -39,7 +39,7 @@ st.markdown("---")
 
 # ---------- Table Columns ----------
 columns = [
-    "File Name", "Vendor Name", "Invoice No", "GSTIN", "HSN/SAC", "Buyer Name", "Place of Supply", "Invoice Date", "Expense Ledger",
+    "Vendor Name", "Invoice No", "GSTIN", "HSN/SAC", "Buyer Name", "Place of Supply", "Invoice Date", "Expense Ledger",
     "GST Type", "Tax Rate", "Basic Amount", "CGST", "SGST", "IGST",
     "Total Payable", "Narration", "GST Input Eligible", "TDS Applicable", "TDS Rate"
 ]
@@ -131,7 +131,7 @@ def convert_pdf_first_page(pdf_bytes):
     return Image.open(io.BytesIO(pix.tobytes("png")))
 
 # ---------- PDF Upload ----------
-uploaded_files = st.file_uploader("📤 Upload scanned invoice PDFs", type=["pdf"], accept_multiple_files=True)
+uploaded_files = st.file_uploader("📄 Upload scanned invoice PDFs", type=["pdf"], accept_multiple_files=True)
 
 if uploaded_files:
     st.session_state["files_uploaded"] = True
@@ -158,7 +158,7 @@ if uploaded_files:
             pdf_data = open(temp_file_path, "rb").read()
             first_image = convert_pdf_first_page(pdf_data)
 
-            with st.spinner("🧠 Extracting data using ChatGPT..."):
+            with st.spinner("🧐 Extracting data using ChatGPT..."):
                 img_buf = io.BytesIO()
                 first_image.save(img_buf, format="PNG")
                 img_buf.seek(0)
@@ -180,29 +180,29 @@ if uploaded_files:
                 csv_line = response.choices[0].message.content.strip()
 
                 if csv_line.upper().startswith("NOT AN INVOICE") or is_placeholder_row(csv_line):
-                    result_row = [file_name] + ["NOT AN INVOICE"] + ["-"] * (len(columns) - 2)
+                    result_row = ["NOT AN INVOICE"] + ["-"] * (len(columns) - 1)
                 else:
                     matched = False
                     for line in csv_line.strip().split("\n"):
                         try:
                             row = [x.strip().strip('"') for x in line.split(",")]
-                            if len(row) >= len(columns) - 1:
-                                result_row = [file_name] + row[:len(columns) - 1]
+                            if len(row) >= len(columns):
+                                result_row = row[:len(columns)]
                                 matched = True
                                 break
                         except Exception:
                             pass
                     if not matched:
-                        result_row = [file_name] + ["NOT AN INVOICE"] + ["-"] * (len(columns) - 2)
+                        result_row = ["NOT AN INVOICE"] + ["-"] * (len(columns) - 1)
 
                 st.session_state["processed_results"][file_name] = result_row
                 st.session_state["processing_status"][file_name] = "✅ Done"
                 completed_count += 1
                 st.success(f"{file_name}: ✅ Done")
-                st.info(f"🤖 {completed_count} out of {total_files} files processed")
+                st.info(f"🧠 {completed_count} out of {total_files} files processed")
 
         except Exception as e:
-            st.session_state["processed_results"][file_name] = [file_name] + ["NOT AN INVOICE"] + ["-"] * (len(columns) - 2)
+            st.session_state["processed_results"][file_name] = ["NOT AN INVOICE"] + ["-"] * (len(columns) - 1)
             st.session_state["processing_status"][file_name] = "❌ Error"
             st.error(f"❌ Error processing {file_name}: {e}")
             st.text_area(f"Raw Output ({file_name})", traceback.format_exc())
@@ -224,7 +224,7 @@ if results:
     st.dataframe(df)
 
     csv_data = df.to_csv(index=False).encode("utf-8")
-    st.download_button("📥 Download Results as CSV", csv_data, "invoice_results.csv", "text/csv")
+    st.download_button("📅 Download Results as CSV", csv_data, "invoice_results.csv", "text/csv")
 
     st.markdown("---")
     if st.session_state.summary_rows:
