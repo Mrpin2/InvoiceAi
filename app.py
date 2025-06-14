@@ -35,12 +35,13 @@ except ImportError:
 
 
 # --- Pydantic Models (Common for both APIs) ---
+# Updated LineItem - removed hsn_sac as it's now at Invoice level based on prompt
 class LineItem(BaseModel):
     description: str
     quantity: float
-    gross_worth: float
-    hsn_sac: Optional[str] = None # Added HSN/SAC
+    gross_worth: float # Gross worth of the individual line item (before any specific item-level taxes, if applicable)
 
+# Updated Invoice model based on your prompt and refined total logic
 class Invoice(BaseModel):
     invoice_number: str
     date: str
@@ -48,15 +49,18 @@ class Invoice(BaseModel):
     seller_name: str
     buyer_name: str
     buyer_gstin: Optional[str] = None
-    line_items: List[LineItem]
-    total_gross_worth: float
+    taxable_amount: float # New field: subtotal BEFORE taxes
     cgst: Optional[float] = None
     sgst: Optional[float] = None
     igst: Optional[float] = None
+    total_amount_payable: float # This is the Gross Total (Including Tax) from the invoice, BEFORE any TDS deduction
+    tds_amount: Optional[float] = None # The numerical value of TDS deducted, if explicitly stated
+    line_items: List[LineItem] # Still keep line items if they are present
     place_of_supply: Optional[str] = None
     expense_ledger: Optional[str] = None
-    tds: Optional[str] = None
-    rcm_applicability: Optional[str] = None # Added RCM Applicability
+    tds: Optional[str] = None # Applicability string (e.g., "Yes - 194J")
+    hsn_sac: Optional[str] = None # Moved to invoice level based on prompt
+    rcm_applicability: Optional[str] = None
 
 
 # --- Utility Functions for UI/Data Formatting ---
@@ -68,7 +72,15 @@ def parse_date_safe(date_str: str) -> str:
     formats = ["%d/%m/%Y", "%d-%m-%Y", "%Y-%m-%d", "%d %b %Y", "%d %B %Y", "%Y/%m/%d"]
     for fmt in formats:
         try:
-            return datetime.strptime(date_str, fmt).strftime("%d/%m/%Y")
+            # Handle 2-digit year by assuming current century (e.g., 24 -> 2024)
+            dt_obj = datetime.strptime(date_str, fmt)
+            # Simple heuristic for 2-digit years: if year is less than (current year % 100) + 10 (e.g., 2024 -> 34),
+            # assume 20xx. Otherwise, assume 19xx.
+            if dt_obj.year < (datetime.now().year % 100) + 10 and dt_obj.year <= 99:
+                 dt_obj = dt_obj.replace(year=dt_obj.year + 2000)
+            elif dt_obj.year <= 99: # For older 2-digit years like 98 -> 1998
+                dt_obj = dt_obj.replace(year=dt_obj.year + 1900)
+            return dt_obj.strftime("%d/%m/%Y")
         except ValueError:
             continue
     # If no format matches, return original string or a placeholder
@@ -79,6 +91,57 @@ def format_currency(amount: Optional[float]) -> str:
     if amount is None:
         return "₹ N/A"
     return f"₹ {amount:,.2f}" # Formats with commas and 2 decimal places
+
+# --- Main Prompt for LLMs ---
+main_prompt = (
+    "You are an expert at extracting structured data from Indian invoices. "
+    "Your task is to extract information into a JSON object with the following keys. "
+    "If a key's value is not explicitly present or derivable from the invoice, use `null` for that value. "
+    "Keys to extract: invoice_number, date, gstin (seller's GSTIN), seller_name, buyer_name, buyer_gstin, "
+    "taxable_amount, cgst, sgst, igst, total_amount_payable, tds_amount, place_of_supply, expense_ledger, tds, hsn_sac, rcm_applicability. "
+    "You MUST include an empty list `[]` for `line_items` if no line items are found, do not use `null` for `line_items`. "
+    "For `line_items`, each item must have 'description', 'quantity', 'gross_worth'.\n\n"
+    
+    "GUIDELINES FOR EXTRACTION:\n"
+    "- 'invoice_number': The unique identifier of the invoice. Extract as is.\n"
+    "- 'date': The invoice date in DD/MM/YYYY format. If year is 2-digit, assume current century (e.g., 24 -> 2024).\n"
+    "- 'taxable_amount': This is the subtotal, the amount BEFORE any taxes (CGST, SGST, IGST) are applied. Must be a number.\n"
+    "- 'total_amount_payable': This is the final total amount on the invoice *including all taxes and other charges*, but *before* any TDS deduction shown on the invoice. This represents the 'Gross Total' or 'Amount before TDS' on the invoice. Must be a number.\n"
+    "- 'gstin': The GSTIN of the seller (the entity issuing the invoice). Must be a 15-character alphanumeric string. Prioritize the GSTIN explicitly labeled as 'GSTIN' or associated with the seller's main details.\n"
+    "- 'buyer_gstin': The GSTIN of the buyer (the entity receiving the invoice). Must be a 15-character alphanumeric string. Prioritize the GSTIN explicitly labeled as 'Buyer GSTIN' or associated with the buyer's details.\n"
+    "- 'hsn_sac': Crucial for Indian invoices. "
+    "  - HSN (Harmonized System of Nomenclature) is for goods."
+    "  - SAC (Service Accounting Code) is for services."
+    "  - **ONLY extract the HSN/SAC code if it is explicitly mentioned on the invoice.** "
+    "  - It is typically a 4, 6, or 8-digit numeric code, sometimes alphanumeric."
+    "  - Look for labels like 'HSN Code', 'SAC Code', 'HSN/SAC', or just the code itself near item descriptions."
+    "  - If multiple HSN/SAC codes are present for different line items, extract the one that appears most prominently, or the first one listed. If only one is present for the whole invoice, use that."
+    "  - **If HSN/SAC is NOT found or explicitly stated, the value MUST be `null`. Do NOT guess or infer it.**\n"
+    
+    "- 'expense_ledger': Classify the nature of expense and suggest a suitable ledger type. "
+    "  Examples: 'Office Supplies', 'Professional Fees', 'Software Subscription', 'Rent', "
+    "  'Cloud Services', 'Marketing Expenses', 'Travel Expenses'. "
+    "  For invoices from cloud providers (e.g., 'Google Cloud', 'AWS', 'Microsoft Azure', 'DigitalOcean'), classify as 'Cloud Services'."
+    "  If the expense is clearly related to software licenses, subscriptions, or SaaS, classify as 'Software Subscription'."
+    "  Aim for a general and universal ledger type if a precise one isn't obvious from the invoice details.\n"
+    
+    "- 'tds': Determine TDS applicability. State 'Yes - Section [X]' if applicable with a section, 'No' if clearly not, or 'Uncertain' if unclear. Always try to identify the TDS Section (e.g., 194J, 194C, 194I) if TDS is applicable.\n"
+    "- 'tds_amount': Extract the exact numerical value of the TDS deducted from the invoice, if explicitly stated. If not stated, set to `null`.\n"
+    
+    "- 'rcm_applicability': Determine Reverse Charge Mechanism (RCM) applicability. State 'Yes' if clearly applicable, 'No' if clearly not, or 'Uncertain' if unclear.\n"
+
+    "- 'place_of_supply': Crucial for Indian invoices to determine IGST applicability. "
+    "  - **PRIORITY 1:** Look for a field explicitly labeled 'Place of Supply'. Extract the exact State/City name from this field (e.g., 'Delhi', 'Maharashtra')."
+    "  - **PRIORITY 2:** If 'Place of Supply' is not found, look for a 'Ship To:' address. Extract ONLY the State/City name from this address."
+    "  - **PRIORITY 3:** If 'Ship To:' is not found, look for a 'Bill To:' address. Extract ONLY the State/City name from this address."
+    "  - **PRIORITY 4:** If neither of the above, infer from the Customer/Buyer Address. Extract ONLY the State/City name from this address."
+    "  - **SPECIAL CASE:** If the invoice text or context clearly indicates an export or foreign transaction (e.g., 'Export Invoice', mentions 'Foreign' address, non-Indian currency as primary total, or foreign recipient details), set the value to 'Foreign'."
+    "  - **FALLBACK:** If none of the above are found or inferable, the value MUST be `null`."
+    
+    "Return 'NOT AN INVOICE' if the document is clearly not an invoice.\n"
+    "Ensure the JSON output is clean and directly parsable."
+)
+
 
 # --- Extraction Functions (Model-Specific) ---
 
@@ -104,24 +167,13 @@ def extract_from_gemini(
         )
         st.success(f"Gemini: '{display_name}' uploaded. Gemini file name: {gemini_file_resource.name}")
 
-        prompt = (
-            "Extract all relevant and clear information from the invoice, adhering to Indian standards "
-            "for dates (DD/MM/YYYY or DD-MM-YYYY) and codes (like GSTIN, HSN/SAC). "
-            "Accurately identify the total amount payable. "
-            "For each line item, extract 'description', 'quantity', 'gross_worth', and 'hsn_sac' (if available). "
-            "Classify the nature of expense and suggest an "
-            "applicable ledger type (e.g., 'Office Supplies', 'Professional Fees', 'Software Subscription'). "
-            "Determine TDS applicability (e.g., 'Yes - Section 194J', 'No', 'Uncertain'). "
-            "Determine reverse charge GST (RCM) applicability (e.g., 'Yes', 'No', 'Uncertain'). "
-            "Handle missing data appropriately by setting fields to null or an empty string where "
-            "Optional, and raise an issue if critical data is missing for required fields. "
-            "Do not make assumptions or perform calculations beyond what's explicitly stated in the invoice text. "
-            "If a value is clearly zero, represent it as 0.0 for floats. For dates, prefer DD/MM/YYYY."
-        )
+        # Use the main_prompt directly
+        prompt_content = [main_prompt, gemini_file_resource]
+        
         st.info(f"Gemini: Sending '{display_name}' to model '{gemini_model_id}' for extraction...")
         response = client_instance.models.generate_content(
             model=gemini_model_id,
-            contents=[prompt, gemini_file_resource],
+            contents=prompt_content,
             config={'response_mime_type': 'application/json', 'response_schema': pydantic_schema}
         )
 
@@ -165,18 +217,14 @@ def extract_from_openai(
     try:
         doc = fitz.open(file_path)
         image_messages = []
-        # OpenAI Vision can take up to 20 images per request.
-        # For invoices, one or two pages are usually enough.
-        # Adjust `max_pages_to_process` if your invoices are multi-page.
         max_pages_to_process = 5 # Limit to prevent excessive costs/tokens for very long PDFs
 
         for page_num in range(min(doc.page_count, max_pages_to_process)):
             page = doc.load_page(page_num)
-            # Render at 2x resolution (matrix=fitz.Matrix(2, 2)) for better OCR, DPI ~144-150
-            # Higher resolution means larger images, more tokens, more cost. Balance is key.
-            pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))
+            pix = page.get_pixmap(matrix=fitz.Matrix(2, 2)) # Render at 2x resolution, DPI ~144-150
+            
+            # Using io.BytesIO to save image to memory, then base64 encode
             img_bytes_io = io.BytesIO()
-            # Convert pixmap to PIL Image, then save to bytes in PNG format
             pil_image = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
             pil_image.save(img_bytes_io, format="PNG")
             img_bytes = img_bytes_io.getvalue()
@@ -186,7 +234,7 @@ def extract_from_openai(
                 "type": "image_url",
                 "image_url": {
                     "url": f"data:image/png;base64,{base64_image}",
-                    "detail": "high" # Use 'high' detail for better OCR, 'low' for faster/cheaper
+                    "detail": "high" # Use 'high' detail for better OCR
                 }
             })
         doc.close()
@@ -195,18 +243,8 @@ def extract_from_openai(
             st.error(f"No pages could be converted to images for '{display_name}'. This might happen with corrupted PDFs or empty files.")
             return None
 
-        system_prompt = (
-            "You are an expert invoice data extractor. Extract all specified details from the provided invoice document(s). "
-            "Output the data strictly as a JSON object conforming to the following Pydantic schema structure. "
-            "Ensure dates are in DD/MM/YYYY format. "
-            "If a field is not found or is optional, set it to `null` or an empty string as appropriate. "
-            "Here is the JSON schema you must adhere to:\n"
-            f"```json\n{pydantic_schema.schema_json(indent=2)}\n```\n"
-            "Do not include any conversational text or explanations outside the JSON. "
-            "Be very precise with amounts and details, including all line items if present. "
-            "If the invoice has multiple pages, consolidate information from all pages."
-        )
-
+        # Use the main_prompt directly as system prompt
+        system_prompt = main_prompt
         user_prompt_text = "Extract invoice data according to the provided schema from these document pages."
 
         st.info(f"OpenAI: Sending {len(image_messages)} image(s) from '{display_name}' to model '{openai_model_id}' for extraction...")
@@ -236,13 +274,13 @@ def extract_from_openai(
                 return extracted_invoice
             except json.JSONDecodeError as e:
                 st.error(f"OpenAI: Failed to decode JSON from response for '{display_name}': {e}")
-                st.error(f"Response content: {json_string[:500]}...") # Show beginning of problematic JSON
+                st.error(f"Response content: {json_string[:500]}..." if json_string else "No JSON content received.")
                 if st.session_state.get('DEBUG_MODE', False):
                     st.code(json_string, language="json")
                 return None
             except Exception as e:
                 st.error(f"OpenAI: Failed to parse extracted data into schema for '{display_name}': {e}")
-                st.error(f"Response content: {json_string[:500]}...") # Show beginning of problematic JSON
+                st.error(f"Response content: {json_string[:500]}..." if json_string else "No JSON content received.")
                 if st.session_state.get('DEBUG_MODE', False):
                     st.code(json_string, language="json")
                 return None
@@ -383,7 +421,7 @@ if 'gemini_client' not in st.session_state:
 if 'openai_client' not in st.session_state:
     st.session_state.openai_client = None
 if 'DEBUG_MODE' not in st.session_state:
-    st.session_state.DEBUG_MODE = False
+    st.session_state.DEBUG_MODE = False # Initialize DEBUG_MODE in session state
 
 
 if st.button("🚀 Process Invoices", type="primary"):
@@ -463,26 +501,37 @@ if st.button("🚀 Process Invoices", type="primary"):
                         cgst = extracted_data.cgst if extracted_data.cgst is not None else 0.0
                         sgst = extracted_data.sgst if extracted_data.sgst is not None else 0.0
                         igst = extracted_data.igst if extracted_data.igst is not None else 0.0
-                        total_gross_worth = extracted_data.total_gross_worth if extracted_data.total_gross_worth is not None else 0.0
+                        taxable_amount = extracted_data.taxable_amount if extracted_data.taxable_amount is not None else 0.0
+                        # total_amount_payable is now the gross total (incl tax), before TDS deduction
+                        gross_total_incl_tax = extracted_data.total_amount_payable if extracted_data.total_amount_payable is not None else 0.0
+                        
+                        tds_amount_extracted = extracted_data.tds_amount if extracted_data.tds_amount is not None else 0.0
+
+                        # Calculate the final payable amount: Gross Total (Including Tax) - TDS
+                        total_payable_after_tds = gross_total_incl_tax - tds_amount_extracted
+
                         pos = extracted_data.place_of_supply or "N/A"
                         seller_name_display = extracted_data.seller_name or "N/A"
                         seller_gstin_display = extracted_data.gstin or "N/A"
                         buyer_name_display = extracted_data.buyer_name or "N/A"
                         buyer_gstin_display = extracted_data.buyer_gstin or "N/A"
                         expense_ledger_display = extracted_data.expense_ledger or "N/A"
-                        tds_display = extracted_data.tds or "N/A"
+                        tds_display = extracted_data.tds or "N/A" # Applicability string
+                        hsn_sac_display = extracted_data.hsn_sac or "N/A"
                         rcm_display = extracted_data.rcm_applicability or "N/A"
 
                         narration = (
                             f"Invoice **{extracted_data.invoice_number or 'N/A'}** dated **{parsed_date}** "
                             f"from **{seller_name_display}** (GSTIN: {seller_gstin_display}) "
                             f"to **{buyer_name_display}** (Buyer GSTIN: {buyer_gstin_display}), "
-                            f"totaling **{format_currency(total_gross_worth)}**. "
+                            f"Taxable: **{format_currency(taxable_amount)}**, Gross Total (Incl Tax): **{format_currency(gross_total_incl_tax)}**, "
+                            f"TDS Deducted: **{format_currency(tds_amount_extracted)}**, Net Payable: **{format_currency(total_payable_after_tds)}**. "
                             f"Taxes: CGST {format_currency(cgst)}, SGST {format_currency(sgst)}, IGST {format_currency(igst)}. "
                             f"Place of Supply: {pos}. Expense Ledger: {expense_ledger_display}. "
-                            f"TDS: {tds_display}. RCM: {rcm_display}."
+                            f"TDS: {tds_display}. HSN/SAC: {hsn_sac_display}. RCM: {rcm_display}."
                         )
 
+                        # Match the order and names from your image for the summary table
                         st.session_state.summary_rows.append({
                             "File Name": uploaded_file_obj.name,
                             "Invoice Number": extracted_data.invoice_number,
@@ -491,15 +540,19 @@ if st.button("🚀 Process Invoices", type="primary"):
                             "Seller GSTIN": seller_gstin_display,
                             "Buyer Name": buyer_name_display,
                             "Buyer GSTIN": buyer_gstin_display,
-                            "Total Gross Worth": total_gross_worth,
+                            "Gross Worth": total_payable_after_tds, # This is now Total (Incl Tax) - TDS
                             "CGST": cgst,
                             "SGST": sgst,
                             "IGST": igst,
                             "Place of Supply": pos,
                             "Expense Ledger": expense_ledger_display,
-                            "TDS": tds_display,
-                            "RCM Applicability": rcm_display,
+                            "TDS": tds_display, # TDS applicability string
+                            "R. Applicability": rcm_display,
                             "Narration": narration,
+                            "Taxable Amount": taxable_amount, # Added for completeness in underlying data
+                            "HSN/SAC": hsn_sac_display, # Added for completeness in underlying data
+                            "Gross Total (Incl Tax)": gross_total_incl_tax, # Added for completeness in underlying data
+                            "TDS Amount": tds_amount_extracted # Added for completeness in underlying data
                         })
 
                         with st.expander(f"📋 Details for {uploaded_file_obj.name} (using {model_choice})"):
@@ -514,8 +567,7 @@ if st.button("🚀 Process Invoices", type="primary"):
                                     "Description": item.description,
                                     "Quantity": item.quantity,
                                     "Gross Worth": format_currency(item.gross_worth),
-                                    "HSN/SAC": item.hsn_sac or "N/A"
-                                } for item in extracted_data.line_items]
+                                } for item in extracted_data.line_items] # HSN/SAC is now at invoice level
                                 st.dataframe(pd.DataFrame(line_item_data), use_container_width=True)
                             else:
                                 st.info("No line items extracted.")
@@ -539,19 +591,77 @@ if st.button("🚀 Process Invoices", type="primary"):
 
 if st.session_state.summary_rows:
     st.subheader("📊 Consolidated Extracted Invoice Summary")
+    
+    # Create the DataFrame from summary_rows
     df = pd.DataFrame(st.session_state.summary_rows)
 
     df_display = df.copy()
-    # Format currency columns for display in the DataFrame
-    for col in ["Total Gross Worth", "CGST", "SGST", "IGST"]:
-        df_display[col] = df_display[col].apply(format_currency)
+
+    # Apply currency formatting for display
+    currency_cols = ["Gross Worth", "CGST", "SGST", "IGST", "Taxable Amount", "Gross Total (Incl Tax)", "TDS Amount"]
+    for col in currency_cols:
+        if col in df_display.columns:
+            df_display[col] = df_display[col].apply(format_currency)
+
+    # Define the exact display order based on your image and additional requirements
+    display_columns_order = [
+        "File Name",
+        "Invoice Number",
+        "Date",
+        "Seller Name",
+        "Seller GSTIN",
+        "Buyer Name",
+        "Buyer GSTIN",
+        "Gross Worth", # This is now Total (Incl Tax) - TDS
+        "CGST",
+        "SGST",
+        "IGST",
+        "Place of Supply",
+        "Expense Ledger",
+        "TDS", # TDS applicability string
+        "R. Applicability",
+        "Narration",
+        "Taxable Amount", # Adding this as it's extracted
+        "HSN/SAC", # Adding this as it's extracted
+        "Gross Total (Incl Tax)", # New column for the gross total before TDS
+        "TDS Amount" # New column for the extracted TDS amount
+    ]
+
+    # Filter df_display to only include desired columns and reorder them
+    df_display = df_display[display_columns_order]
 
     st.dataframe(df_display, use_container_width=True)
 
     output_excel = io.BytesIO()
     with pd.ExcelWriter(output_excel, engine='openpyxl') as writer:
-        # Write the unformatted DataFrame to Excel to keep numbers as numbers
-        df.to_excel(writer, index=False, sheet_name='InvoiceSummary')
+        # For Excel, we use the original df (before currency formatting for display)
+        # and explicitly order the columns as per the request, including Taxable Amount and HSN/SAC.
+        excel_columns_order = [
+            "File Name",
+            "Invoice Number",
+            "Date",
+            "Seller Name",
+            "Seller GSTIN",
+            "Buyer Name",
+            "Buyer GSTIN",
+            "Gross Worth", # This is now Total (Incl Tax) - TDS
+            "CGST",
+            "SGST",
+            "IGST",
+            "Place of Supply",
+            "Expense Ledger",
+            "TDS", # TDS applicability string
+            "R. Applicability",
+            "Narration",
+            "Taxable Amount",
+            "HSN/SAC",
+            "Gross Total (Incl Tax)",
+            "TDS Amount"
+        ]
+        
+        # Filter and reorder for Excel export
+        df_for_excel = df[excel_columns_order]
+        df_for_excel.to_excel(writer, index=False, sheet_name='InvoiceSummary')
     excel_data = output_excel.getvalue()
 
     st.download_button(
