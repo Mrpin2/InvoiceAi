@@ -151,12 +151,13 @@ if uploaded_files:
                 )
 
                 response_text = response.choices[0].message.content.strip()
+                if not response_text:
+                    raise ValueError("Empty response from OpenAI")
 
                 try:
-                    json_fields = columns
                     raw_data = json.loads(response_text)
-                    row = [raw_data.get(field, "") for field in json_fields]
-                    row += ["INR"]  # Default currency
+                    row = [raw_data.get(field, "") for field in columns]
+                    row += ["INR"]
 
                     if not is_valid_gstin(row[2]):
                         row[2] = "MISSING"
@@ -191,7 +192,8 @@ if uploaded_files:
                     if "not an invoice" in response_text.lower():
                         result_row = ["NOT AN INVOICE"] + ["-"] * (len(columns) - 1)
                     else:
-                        raise
+                        st.text_area("❌ Raw GPT Response", value=response_text, height=200)
+                        raise ValueError("Unable to decode JSON from GPT response.")
 
                 st.session_state["processed_results"][file_name] = result_row
                 st.session_state["processing_status"][file_name] = "✅ Done"
