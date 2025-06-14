@@ -19,6 +19,13 @@ except ImportError:
     fitz = None
     Image = None
 
+# --- New Import for Lottie Animation ---
+try:
+    from streamlit_lottie import st_lottie
+except ImportError:
+    st.warning("The 'streamlit-lottie' library is not installed. Lottie animations will not work.")
+    st_lottie = None # Set to None if not imported
+
 
 # --- Import Libraries for Both Models ---
 try:
@@ -35,13 +42,11 @@ except ImportError:
 
 
 # --- Pydantic Models (Common for both APIs) ---
-# Updated LineItem - removed hsn_sac as it's now at Invoice level based on prompt
 class LineItem(BaseModel):
     description: str
     quantity: float
-    gross_worth: float # Gross worth of the individual line item (before any specific item-level taxes, if applicable)
+    gross_worth: float
 
-# Updated Invoice model based on your prompt and refined total logic
 class Invoice(BaseModel):
     invoice_number: str
     date: str
@@ -55,6 +60,7 @@ class Invoice(BaseModel):
     igst: Optional[float] = None
     total_amount_payable: float # This is the Gross Total (Including Tax) from the invoice, BEFORE any TDS deduction
     tds_amount: Optional[float] = None # The numerical value of TDS deducted, if explicitly stated
+    tds_rate: Optional[float] = None # NEW: Added TDS Rate
     line_items: List[LineItem] # Still keep line items if they are present
     place_of_supply: Optional[str] = None
     expense_ledger: Optional[str] = None
@@ -78,7 +84,7 @@ def parse_date_safe(date_str: str) -> str:
             # assume 20xx. Otherwise, assume 19xx.
             if dt_obj.year < (datetime.now().year % 100) + 10 and dt_obj.year <= 99:
                  dt_obj = dt_obj.replace(year=dt_obj.year + 2000)
-            elif dt_obj.year <= 99: # For older 2-digit years like 98 -> 1998
+            elif dt_obj.year <= 99: # For years like 98 -> 1998
                 dt_obj = dt_obj.replace(year=dt_obj.year + 1900)
             return dt_obj.strftime("%d/%m/%Y")
         except ValueError:
@@ -92,13 +98,24 @@ def format_currency(amount: Optional[float]) -> str:
         return "₹ N/A"
     return f"₹ {amount:,.2f}" # Formats with commas and 2 decimal places
 
+def load_lottie_url(url: str):
+    try:
+        import requests
+        r = requests.get(url)
+        if r.status_code != 200:
+            return None
+        return r.json()
+    except Exception as e:
+        st.error(f"Could not load Lottie animation from URL: {e}")
+        return None
+
 # --- Main Prompt for LLMs ---
 main_prompt = (
     "You are an expert at extracting structured data from Indian invoices. "
     "Your task is to extract information into a JSON object with the following keys. "
     "If a key's value is not explicitly present or derivable from the invoice, use `null` for that value. "
     "Keys to extract: invoice_number, date, gstin (seller's GSTIN), seller_name, buyer_name, buyer_gstin, "
-    "taxable_amount, cgst, sgst, igst, total_amount_payable, tds_amount, place_of_supply, expense_ledger, tds, hsn_sac, rcm_applicability. "
+    "taxable_amount, cgst, sgst, igst, total_amount_payable, tds_amount, tds_rate, place_of_supply, expense_ledger, tds, hsn_sac, rcm_applicability. " # Added tds_rate
     "You MUST include an empty list `[]` for `line_items` if no line items are found, do not use `null` for `line_items`. "
     "For `line_items`, each item must have 'description', 'quantity', 'gross_worth'.\n\n"
     
@@ -120,13 +137,18 @@ main_prompt = (
     
     "- 'expense_ledger': Classify the nature of expense and suggest a suitable ledger type. "
     "  Examples: 'Office Supplies', 'Professional Fees', 'Software Subscription', 'Rent', "
-    "  'Cloud Services', 'Marketing Expenses', 'Travel Expenses'. "
-    "  For invoices from cloud providers (e.g., 'Google Cloud', 'AWS', 'Microsoft Azure', 'DigitalOcean'), classify as 'Cloud Services'."
+    "  'Cloud Services', 'Google Cloud', 'AWS', 'Microsoft Azure', 'DigitalOcean', 'Marketing Expenses', 'Travel Expenses'. "
     "  If the expense is clearly related to software licenses, subscriptions, or SaaS, classify as 'Software Subscription'."
     "  Aim for a general and universal ledger type if a precise one isn't obvious from the invoice details.\n"
     
-    "- 'tds': Determine TDS applicability. State 'Yes - Section [X]' if applicable with a section, 'No' if clearly not, or 'Uncertain' if unclear. Always try to identify the TDS Section (e.g., 194J, 194C, 194I) if TDS is applicable.\n"
+    "- 'tds': Determine TDS applicability. This field should be a string indicating applicability and section. "
+    "  - If TDS is deducted, a TDS section is mentioned (e.g., 'TDS u/s 194J', 'TDS @10%'), state 'Yes - Section [X]' (e.g., 'Yes - Section 194J'). "
+    "  - **If a TDS rate or amount is present but no section is explicitly mentioned, infer the most common section if possible, otherwise state 'Yes - Section Unknown'.**"
+    "  - If TDS is explicitly stated as 'Not Applicable' or no TDS details (amount, rate, section) are present and the invoice is clearly domestic, state 'No'."
+    "  - If unclear or implied but no explicit section/amount, state 'Uncertain'."
+    "  - **Crucially, if the buyer is explicitly stated as 'Foreign' or the 'Place of Supply' is outside India, then TDS is typically 'No'. Prefer 'No' in such cases.**\n"
     "- 'tds_amount': Extract the exact numerical value of the TDS deducted from the invoice, if explicitly stated. If not stated, set to `null`.\n"
+    "- 'tds_rate': Extract the numerical percentage rate of TDS deducted (e.g., '10' for 10%), if explicitly stated. If not stated, set to `null`.\n"
     
     "- 'rcm_applicability': Determine Reverse Charge Mechanism (RCM) applicability. State 'Yes' if clearly applicable, 'No' if clearly not, or 'Uncertain' if unclear.\n"
 
@@ -160,24 +182,19 @@ def extract_from_gemini(
         return None
 
     try:
-        st.info(f"Gemini: Uploading '{display_name}' to Gemini File API...")
         gemini_file_resource = client_instance.files.upload(
             file=file_path,
             config={'display_name': display_name.split('.')[0]}
         )
-        st.success(f"Gemini: '{display_name}' uploaded. Gemini file name: {gemini_file_resource.name}")
-
-        # Use the main_prompt directly
+        
         prompt_content = [main_prompt, gemini_file_resource]
         
-        st.info(f"Gemini: Sending '{display_name}' to model '{gemini_model_id}' for extraction...")
         response = client_instance.models.generate_content(
             model=gemini_model_id,
             contents=prompt_content,
             config={'response_mime_type': 'application/json', 'response_schema': pydantic_schema}
         )
 
-        st.success(f"Gemini: Data extracted for '{display_name}'.")
         return response.parsed
 
     except Exception as e:
@@ -187,10 +204,8 @@ def extract_from_gemini(
     finally:
         if gemini_file_resource:
             try:
-                st.info(f"Gemini: Attempting to delete '{gemini_file_resource.name}' from File API...")
                 if client_instance and hasattr(client_instance, 'files') and hasattr(client_instance.files, 'delete'):
                     client_instance.files.delete(name=gemini_file_resource.name)
-                    st.success(f"Gemini: Successfully deleted '{gemini_file_resource.name}'.")
                 else:
                     st.warning(f"Gemini: File API client does not support direct deletion or method not found. Manual cleanup may be required.")
             except Exception as e_del:
@@ -247,8 +262,6 @@ def extract_from_openai(
         system_prompt = main_prompt
         user_prompt_text = "Extract invoice data according to the provided schema from these document pages."
 
-        st.info(f"OpenAI: Sending {len(image_messages)} image(s) from '{display_name}' to model '{openai_model_id}' for extraction...")
-
         messages_content = [{"type": "text", "text": user_prompt_text}] + image_messages
 
         response = client_instance.chat.completions.create(
@@ -270,7 +283,6 @@ def extract_from_openai(
             try:
                 extracted_dict = json.loads(json_string)
                 extracted_invoice = pydantic_schema.parse_obj(extracted_dict)
-                st.success(f"OpenAI: Data extracted and validated for '{display_name}'.")
                 return extracted_invoice
             except json.JSONDecodeError as e:
                 st.error(f"OpenAI: Failed to decode JSON from response for '{display_name}': {e}")
@@ -402,7 +414,6 @@ st.info(
     "**Instructions:**\n"
     f"1. Select your preferred AI model ({model_choice}) in the sidebar.\n"
     "2. If you know the admin password, enter it to use pre-configured API keys from `Streamlit Secrets`.\n"
-    "   Otherwise, enter your own API keys manually.\n"
     "3. Upload one or more PDF invoice files.\n"
     "4. Click 'Process Invoices' to extract data.\n"
     "   The extracted data will be displayed in a table and available for download as Excel."
@@ -469,6 +480,7 @@ if st.button("🚀 Process Invoices", type="primary"):
 
             for i, uploaded_file_obj in enumerate(uploaded_files):
                 st.markdown(f"---")
+                # Simplified progress message
                 st.info(f"Processing file: **{uploaded_file_obj.name}** ({i+1}/{total_files}) using **{model_choice}**...")
                 temp_file_path = None
                 extracted_data = None
@@ -495,28 +507,52 @@ if st.button("🚀 Process Invoices", type="primary"):
                             )
                     
                     if extracted_data:
-                        st.success(f"Successfully extracted data from **{uploaded_file_obj.name}** 🎉")
-
                         parsed_date = parse_date_safe(extracted_data.date)
                         cgst = extracted_data.cgst if extracted_data.cgst is not None else 0.0
                         sgst = extracted_data.sgst if extracted_data.sgst is not None else 0.0
                         igst = extracted_data.igst if extracted_data.igst is not None else 0.0
                         taxable_amount = extracted_data.taxable_amount if extracted_data.taxable_amount is not None else 0.0
-                        # total_amount_payable is now the gross total (incl tax), before TDS deduction
                         gross_total_incl_tax = extracted_data.total_amount_payable if extracted_data.total_amount_payable is not None else 0.0
                         
                         tds_amount_extracted = extracted_data.tds_amount if extracted_data.tds_amount is not None else 0.0
+                        tds_rate_extracted = extracted_data.tds_rate if extracted_data.tds_rate is not None else "N/A" # Get TDS Rate
+                        tds_display = extracted_data.tds or "N/A" # Applicability string (e.g., "Yes - 194J")
+                        pos = extracted_data.place_of_supply or "N/A"
 
-                        # Calculate the final payable amount: Gross Total (Including Tax) - TDS
+                        # --- Logic for TDS Section ---
+                        tds_section_display = "N/A"
+                        if isinstance(tds_display, str) and "section" in tds_display.lower():
+                            # Attempt to extract section number
+                            parts = tds_display.split("Section ")
+                            if len(parts) > 1:
+                                section_part = parts[1].strip()
+                                # Clean up common suffixes like brackets, periods, etc.
+                                section_part = section_part.split(' ')[0].split(']')[0].split('.')[0].strip()
+                                if section_part:
+                                    tds_section_display = section_part
+                        # --- End Logic for TDS Section ---
+
+
+                        # --- Adjust TDS if Buyer is Foreign or TDS is explicitly "No" ---
+                        if pos.lower() == "foreign":
+                            tds_display = "No" # Applicability
+                            tds_amount_extracted = 0.0
+                            tds_rate_extracted = "N/A"
+                            tds_section_display = "N/A"
+                            st.info(f"TDS adjusted to 'No' for **{uploaded_file_obj.name}** as Place of Supply is 'Foreign'.")
+                        elif tds_display.lower() == "no": # If LLM explicitly said "No"
+                            tds_amount_extracted = 0.0
+                            tds_rate_extracted = "N/A"
+                            tds_section_display = "N/A"
+                        # --- End NEW LOGIC ---
+
                         total_payable_after_tds = gross_total_incl_tax - tds_amount_extracted
 
-                        pos = extracted_data.place_of_supply or "N/A"
                         seller_name_display = extracted_data.seller_name or "N/A"
                         seller_gstin_display = extracted_data.gstin or "N/A"
                         buyer_name_display = extracted_data.buyer_name or "N/A"
                         buyer_gstin_display = extracted_data.buyer_gstin or "N/A"
                         expense_ledger_display = extracted_data.expense_ledger or "N/A"
-                        tds_display = extracted_data.tds or "N/A" # Applicability string
                         hsn_sac_display = extracted_data.hsn_sac or "N/A"
                         rcm_display = extracted_data.rcm_applicability or "N/A"
 
@@ -525,13 +561,12 @@ if st.button("🚀 Process Invoices", type="primary"):
                             f"from **{seller_name_display}** (GSTIN: {seller_gstin_display}) "
                             f"to **{buyer_name_display}** (Buyer GSTIN: {buyer_gstin_display}), "
                             f"Taxable: **{format_currency(taxable_amount)}**, Gross Total (Incl Tax): **{format_currency(gross_total_incl_tax)}**, "
-                            f"TDS Deducted: **{format_currency(tds_amount_extracted)}**, Net Payable: **{format_currency(total_payable_after_tds)}**. "
+                            f"TDS Deducted: **{format_currency(tds_amount_extracted)}** (Rate: {tds_rate_extracted}% Section: {tds_section_display}), Net Payable: **{format_currency(total_payable_after_tds)}**. "
                             f"Taxes: CGST {format_currency(cgst)}, SGST {format_currency(sgst)}, IGST {format_currency(igst)}. "
                             f"Place of Supply: {pos}. Expense Ledger: {expense_ledger_display}. "
-                            f"TDS: {tds_display}. HSN/SAC: {hsn_sac_display}. RCM: {rcm_display}."
+                            f"RCM: {rcm_display}. HSN/SAC: {hsn_sac_display}."
                         )
 
-                        # Match the order and names from your image for the summary table
                         st.session_state.summary_rows.append({
                             "File Name": uploaded_file_obj.name,
                             "Invoice Number": extracted_data.invoice_number,
@@ -540,24 +575,22 @@ if st.button("🚀 Process Invoices", type="primary"):
                             "Seller GSTIN": seller_gstin_display,
                             "Buyer Name": buyer_name_display,
                             "Buyer GSTIN": buyer_gstin_display,
-                            "Gross Worth": total_payable_after_tds, # This is now Total (Incl Tax) - TDS
+                            "HSN/SAC": hsn_sac_display,
+                            "Place of Supply": pos,
+                            "Taxable Amount": taxable_amount,
+                            "Expense Ledger": expense_ledger_display,
                             "CGST": cgst,
                             "SGST": sgst,
                             "IGST": igst,
-                            "Place of Supply": pos,
-                            "Expense Ledger": expense_ledger_display,
-                            "TDS": tds_display, # TDS applicability string
-                            "R. Applicability": rcm_display,
+                            "TDS Rate": tds_rate_extracted,
+                            "TDS Amount": tds_amount_extracted,
+                            "TDS Section (By determining expense)": tds_section_display,
                             "Narration": narration,
-                            "Taxable Amount": taxable_amount, # Added for completeness in underlying data
-                            "HSN/SAC": hsn_sac_display, # Added for completeness in underlying data
-                            "Gross Total (Incl Tax)": gross_total_incl_tax, # Added for completeness in underlying data
-                            "TDS Amount": tds_amount_extracted # Added for completeness in underlying data
+                            "Gross Total (Incl Tax)": gross_total_incl_tax, # Keep for backend calculation/Excel
+                            "R. Applicability": rcm_display, # Keep for Excel
                         })
 
                         with st.expander(f"📋 Details for {uploaded_file_obj.name} (using {model_choice})"):
-                            st.subheader("Raw Extracted Data (JSON):")
-                            st.json(extracted_data.dict())
                             st.subheader("Extracted Summary (Narration):")
                             st.markdown(narration)
 
@@ -567,7 +600,7 @@ if st.button("🚀 Process Invoices", type="primary"):
                                     "Description": item.description,
                                     "Quantity": item.quantity,
                                     "Gross Worth": format_currency(item.gross_worth),
-                                } for item in extracted_data.line_items] # HSN/SAC is now at invoice level
+                                } for item in extracted_data.line_items]
                                 st.dataframe(pd.DataFrame(line_item_data), use_container_width=True)
                             else:
                                 st.info("No line items extracted.")
@@ -585,7 +618,12 @@ if st.button("🚀 Process Invoices", type="primary"):
 
             st.markdown(f"---")
             if st.session_state.summary_rows:
-                st.balloons()
+                # Load and display Lottie animation for success
+                lottie_success_url = "https://raw.githubusercontent.com/Mrpin2/InvoiceAi/main/Animation%20-%201749845303699.json"
+                lottie_json = load_lottie_url(lottie_success_url)
+                if lottie_json and st_lottie: # Ensure st_lottie is imported
+                    st_lottie(lottie_json, height=200, key="success_animation")
+                
                 st.success("All selected invoices processed!")
 
 
@@ -598,12 +636,17 @@ if st.session_state.summary_rows:
     df_display = df.copy()
 
     # Apply currency formatting for display
-    currency_cols = ["Gross Worth", "CGST", "SGST", "IGST", "Taxable Amount", "Gross Total (Incl Tax)", "TDS Amount"]
+    currency_cols = ["CGST", "SGST", "IGST", "Taxable Amount", "TDS Amount", "Gross Total (Incl Tax)"]
     for col in currency_cols:
         if col in df_display.columns:
             df_display[col] = df_display[col].apply(format_currency)
 
-    # Define the exact display order based on your image and additional requirements
+    # Format TDS Rate for display if it's a number
+    if "TDS Rate" in df_display.columns:
+        df_display["TDS Rate"] = df_display["TDS Rate"].apply(lambda x: f"{x:.2f}%" if isinstance(x, (int, float)) else x)
+
+
+    # Define the exact display order as requested
     display_columns_order = [
         "File Name",
         "Invoice Number",
@@ -612,30 +655,28 @@ if st.session_state.summary_rows:
         "Seller GSTIN",
         "Buyer Name",
         "Buyer GSTIN",
-        "Gross Worth", # This is now Total (Incl Tax) - TDS
+        "HSN/SAC",
+        "Place of Supply",
+        "Taxable Amount",
+        "Expense Ledger",
         "CGST",
         "SGST",
         "IGST",
-        "Place of Supply",
-        "Expense Ledger",
-        "TDS", # TDS applicability string
-        "R. Applicability",
+        "TDS Rate",
+        "TDS Amount",
+        "TDS Section (By determining expense)",
         "Narration",
-        "Taxable Amount", # Adding this as it's extracted
-        "HSN/SAC", # Adding this as it's extracted
-        "Gross Total (Incl Tax)", # New column for the gross total before TDS
-        "TDS Amount" # New column for the extracted TDS amount
     ]
 
     # Filter df_display to only include desired columns and reorder them
-    df_display = df_display[display_columns_order]
+    # Ensure all columns in display_columns_order exist in df_display before filtering
+    actual_display_columns = [col for col in display_columns_order if col in df_display.columns]
+    df_display = df_display[actual_display_columns]
 
     st.dataframe(df_display, use_container_width=True)
 
     output_excel = io.BytesIO()
     with pd.ExcelWriter(output_excel, engine='openpyxl') as writer:
-        # For Excel, we use the original df (before currency formatting for display)
-        # and explicitly order the columns as per the request, including Taxable Amount and HSN/SAC.
         excel_columns_order = [
             "File Name",
             "Invoice Number",
@@ -644,23 +685,24 @@ if st.session_state.summary_rows:
             "Seller GSTIN",
             "Buyer Name",
             "Buyer GSTIN",
-            "Gross Worth", # This is now Total (Incl Tax) - TDS
+            "HSN/SAC",
+            "Place of Supply",
+            "Taxable Amount",
+            "Expense Ledger",
             "CGST",
             "SGST",
             "IGST",
-            "Place of Supply",
-            "Expense Ledger",
-            "TDS", # TDS applicability string
-            "R. Applicability",
+            "TDS Rate",
+            "TDS Amount",
+            "TDS Section (By determining expense)",
             "Narration",
-            "Taxable Amount",
-            "HSN/SAC",
-            "Gross Total (Incl Tax)",
-            "TDS Amount"
+            "Gross Total (Incl Tax)", # Keeping this for Excel as it's a useful derived value
+            "R. Applicability", # Keeping this for Excel
         ]
         
-        # Filter and reorder for Excel export
-        df_for_excel = df[excel_columns_order]
+        # Filter and reorder for Excel export, ensuring columns exist
+        actual_excel_columns = [col for col in excel_columns_order if col in df.columns]
+        df_for_excel = df[actual_excel_columns]
         df_for_excel.to_excel(writer, index=False, sheet_name='InvoiceSummary')
     excel_data = output_excel.getvalue()
 
