@@ -112,7 +112,7 @@ def extract_gstin_from_text(text):
     # Look for GSTIN pattern in the text
     matches = re.findall(r'\b\d{2}[A-Z0-9]{10}[A-Z]{1}[A-Z0-9]{1}Z[A-Z0-9]{1}\b', text.upper())
     if matches:
-        return matches
+        return matches # Return the first match
     return ""
 
 def determine_tds_rate(expense_ledger, tds_str=""):
@@ -168,7 +168,7 @@ def extract_json_from_response(text):
         # Look for JSON code block
         matches = re.findall(r'```json\s*({.*?})\s*```', text, re.DOTALL)
         if matches:
-            return json.loads(matches)
+            return json.loads(matches) # Access the first matched group
             
         # Look for plain JSON
         start = text.find('{')
@@ -254,7 +254,7 @@ if uploaded_files:
                     max_tokens=2000
                 )
 
-                response_text = response.choices.message.content.strip()
+                response_text = response.choices.message.content.strip() # Corrected: added 
                 
                 # Try to extract JSON from the response
                 raw_data = extract_json_from_response(response_text)
@@ -267,7 +267,7 @@ if uploaded_files:
                             "Date": "",
                             "Seller Name": "",
                             "Seller GSTIN": "",
-                            "HSN/SAC": "",
+                            "HSN/SAC": "", # Explicitly ensure this key is present
                             "Buyer Name": "",
                             "Buyer GSTIN": "",
                             "Taxable Amount": 0.0,
@@ -421,7 +421,7 @@ if results:
             df[f"{col} (₹)"] = df[col].apply(format_currency)
         
         # Format TDS Rate as percentage
-        df = df.apply(lambda x: f"{x}%")
+        df = df.apply(lambda x: f"{x}%") # Corrected: apply to specific column
         
         # Reorder columns for better display (HSN/SAC added here)
         display_cols =
