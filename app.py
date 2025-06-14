@@ -19,6 +19,13 @@ except ImportError:
     fitz = None
     Image = None
 
+# --- New Import for Lottie Animation ---
+try:
+    from streamlit_lottie import st_lottie
+except ImportError:
+    st.warning("The 'streamlit-lottie' library is not installed. Lottie animations will not work.")
+    st_lottie = None # Set to None if not imported
+
 
 # --- Import Libraries for Both Models ---
 try:
@@ -35,13 +42,11 @@ except ImportError:
 
 
 # --- Pydantic Models (Common for both APIs) ---
-# Updated LineItem - removed hsn_sac as it's now at Invoice level based on prompt
 class LineItem(BaseModel):
     description: str
     quantity: float
-    gross_worth: float # Gross worth of the individual line item (before any specific item-level taxes, if applicable)
+    gross_worth: float
 
-# Updated Invoice model based on your prompt and refined total logic
 class Invoice(BaseModel):
     invoice_number: str
     date: str
@@ -78,7 +83,7 @@ def parse_date_safe(date_str: str) -> str:
             # assume 20xx. Otherwise, assume 19xx.
             if dt_obj.year < (datetime.now().year % 100) + 10 and dt_obj.year <= 99:
                  dt_obj = dt_obj.replace(year=dt_obj.year + 2000)
-            elif dt_obj.year <= 99: # For older 2-digit years like 98 -> 1998
+            elif dt_obj.year <= 99: # For years like 98 -> 1998
                 dt_obj = dt_obj.replace(year=dt_obj.year + 1900)
             return dt_obj.strftime("%d/%m/%Y")
         except ValueError:
@@ -91,6 +96,17 @@ def format_currency(amount: Optional[float]) -> str:
     if amount is None:
         return "₹ N/A"
     return f"₹ {amount:,.2f}" # Formats with commas and 2 decimal places
+
+def load_lottie_url(url: str):
+    try:
+        import requests
+        r = requests.get(url)
+        if r.status_code != 200:
+            return None
+        return r.json()
+    except Exception as e:
+        st.error(f"Could not load Lottie animation from URL: {e}")
+        return None
 
 # --- Main Prompt for LLMs ---
 main_prompt = (
@@ -160,24 +176,24 @@ def extract_from_gemini(
         return None
 
     try:
-        st.info(f"Gemini: Uploading '{display_name}' to Gemini File API...")
+        # st.info(f"Gemini: Uploading '{display_name}' to Gemini File API...") # Removed verbose message
         gemini_file_resource = client_instance.files.upload(
             file=file_path,
             config={'display_name': display_name.split('.')[0]}
         )
-        st.success(f"Gemini: '{display_name}' uploaded. Gemini file name: {gemini_file_resource.name}")
+        # st.success(f"Gemini: '{display_name}' uploaded. Gemini file name: {gemini_file_resource.name}") # Removed verbose message
 
         # Use the main_prompt directly
         prompt_content = [main_prompt, gemini_file_resource]
         
-        st.info(f"Gemini: Sending '{display_name}' to model '{gemini_model_id}' for extraction...")
+        # st.info(f"Gemini: Sending '{display_name}' to model '{gemini_model_id}' for extraction...") # Removed verbose message
         response = client_instance.models.generate_content(
             model=gemini_model_id,
             contents=prompt_content,
             config={'response_mime_type': 'application/json', 'response_schema': pydantic_schema}
         )
 
-        st.success(f"Gemini: Data extracted for '{display_name}'.")
+        # st.success(f"Gemini: Data extracted for '{display_name}'.") # Removed verbose message
         return response.parsed
 
     except Exception as e:
@@ -187,10 +203,10 @@ def extract_from_gemini(
     finally:
         if gemini_file_resource:
             try:
-                st.info(f"Gemini: Attempting to delete '{gemini_file_resource.name}' from File API...")
+                # st.info(f"Gemini: Attempting to delete '{gemini_file_resource.name}' from File API...") # Removed verbose message
                 if client_instance and hasattr(client_instance, 'files') and hasattr(client_instance.files, 'delete'):
                     client_instance.files.delete(name=gemini_file_resource.name)
-                    st.success(f"Gemini: Successfully deleted '{gemini_file_resource.name}'.")
+                    # st.success(f"Gemini: Successfully deleted '{gemini_file_resource.name}'.") # Removed verbose message
                 else:
                     st.warning(f"Gemini: File API client does not support direct deletion or method not found. Manual cleanup may be required.")
             except Exception as e_del:
@@ -247,7 +263,7 @@ def extract_from_openai(
         system_prompt = main_prompt
         user_prompt_text = "Extract invoice data according to the provided schema from these document pages."
 
-        st.info(f"OpenAI: Sending {len(image_messages)} image(s) from '{display_name}' to model '{openai_model_id}' for extraction...")
+        # st.info(f"OpenAI: Sending {len(image_messages)} image(s) from '{display_name}' to model '{openai_model_id}' for extraction...") # Removed verbose message
 
         messages_content = [{"type": "text", "text": user_prompt_text}] + image_messages
 
@@ -270,7 +286,7 @@ def extract_from_openai(
             try:
                 extracted_dict = json.loads(json_string)
                 extracted_invoice = pydantic_schema.parse_obj(extracted_dict)
-                st.success(f"OpenAI: Data extracted and validated for '{display_name}'.")
+                # st.success(f"OpenAI: Data extracted and validated for '{display_name}'.") # Removed verbose message
                 return extracted_invoice
             except json.JSONDecodeError as e:
                 st.error(f"OpenAI: Failed to decode JSON from response for '{display_name}': {e}")
@@ -402,7 +418,6 @@ st.info(
     "**Instructions:**\n"
     f"1. Select your preferred AI model ({model_choice}) in the sidebar.\n"
     "2. If you know the admin password, enter it to use pre-configured API keys from `Streamlit Secrets`.\n"
-    "   Otherwise, enter your own API keys manually.\n"
     "3. Upload one or more PDF invoice files.\n"
     "4. Click 'Process Invoices' to extract data.\n"
     "   The extracted data will be displayed in a table and available for download as Excel."
@@ -469,6 +484,7 @@ if st.button("🚀 Process Invoices", type="primary"):
 
             for i, uploaded_file_obj in enumerate(uploaded_files):
                 st.markdown(f"---")
+                # Simplified progress message
                 st.info(f"Processing file: **{uploaded_file_obj.name}** ({i+1}/{total_files}) using **{model_choice}**...")
                 temp_file_path = None
                 extracted_data = None
@@ -495,19 +511,16 @@ if st.button("🚀 Process Invoices", type="primary"):
                             )
                     
                     if extracted_data:
-                        st.success(f"Successfully extracted data from **{uploaded_file_obj.name}** 🎉")
-
+                        # No success message here, it will be handled by the final animation
                         parsed_date = parse_date_safe(extracted_data.date)
                         cgst = extracted_data.cgst if extracted_data.cgst is not None else 0.0
                         sgst = extracted_data.sgst if extracted_data.sgst is not None else 0.0
                         igst = extracted_data.igst if extracted_data.igst is not None else 0.0
                         taxable_amount = extracted_data.taxable_amount if extracted_data.taxable_amount is not None else 0.0
-                        # total_amount_payable is now the gross total (incl tax), before TDS deduction
                         gross_total_incl_tax = extracted_data.total_amount_payable if extracted_data.total_amount_payable is not None else 0.0
                         
                         tds_amount_extracted = extracted_data.tds_amount if extracted_data.tds_amount is not None else 0.0
 
-                        # Calculate the final payable amount: Gross Total (Including Tax) - TDS
                         total_payable_after_tds = gross_total_incl_tax - tds_amount_extracted
 
                         pos = extracted_data.place_of_supply or "N/A"
@@ -531,7 +544,6 @@ if st.button("🚀 Process Invoices", type="primary"):
                             f"TDS: {tds_display}. HSN/SAC: {hsn_sac_display}. RCM: {rcm_display}."
                         )
 
-                        # Match the order and names from your image for the summary table
                         st.session_state.summary_rows.append({
                             "File Name": uploaded_file_obj.name,
                             "Invoice Number": extracted_data.invoice_number,
@@ -549,10 +561,10 @@ if st.button("🚀 Process Invoices", type="primary"):
                             "TDS": tds_display, # TDS applicability string
                             "R. Applicability": rcm_display,
                             "Narration": narration,
-                            "Taxable Amount": taxable_amount, # Added for completeness in underlying data
-                            "HSN/SAC": hsn_sac_display, # Added for completeness in underlying data
-                            "Gross Total (Incl Tax)": gross_total_incl_tax, # Added for completeness in underlying data
-                            "TDS Amount": tds_amount_extracted # Added for completeness in underlying data
+                            "Taxable Amount": taxable_amount,
+                            "HSN/SAC": hsn_sac_display,
+                            "Gross Total (Incl Tax)": gross_total_incl_tax,
+                            "TDS Amount": tds_amount_extracted
                         })
 
                         with st.expander(f"📋 Details for {uploaded_file_obj.name} (using {model_choice})"):
@@ -567,7 +579,7 @@ if st.button("🚀 Process Invoices", type="primary"):
                                     "Description": item.description,
                                     "Quantity": item.quantity,
                                     "Gross Worth": format_currency(item.gross_worth),
-                                } for item in extracted_data.line_items] # HSN/SAC is now at invoice level
+                                } for item in extracted_data.line_items]
                                 st.dataframe(pd.DataFrame(line_item_data), use_container_width=True)
                             else:
                                 st.info("No line items extracted.")
@@ -585,7 +597,12 @@ if st.button("🚀 Process Invoices", type="primary"):
 
             st.markdown(f"---")
             if st.session_state.summary_rows:
-                st.balloons()
+                # Load and display Lottie animation for success
+                lottie_success_url = "https://raw.githubusercontent.com/Mrpin2/InvoiceAi/main/Animation%20-%201749845303699.json"
+                lottie_json = load_lottie_url(lottie_success_url)
+                if lottie_json and st_lottie: # Ensure st_lottie is imported
+                    st_lottie(lottie_json, height=200, key="success_animation")
+                
                 st.success("All selected invoices processed!")
 
 
@@ -621,10 +638,10 @@ if st.session_state.summary_rows:
         "TDS", # TDS applicability string
         "R. Applicability",
         "Narration",
-        "Taxable Amount", # Adding this as it's extracted
-        "HSN/SAC", # Adding this as it's extracted
-        "Gross Total (Incl Tax)", # New column for the gross total before TDS
-        "TDS Amount" # New column for the extracted TDS amount
+        "Taxable Amount",
+        "HSN/SAC",
+        "Gross Total (Incl Tax)",
+        "TDS Amount"
     ]
 
     # Filter df_display to only include desired columns and reorder them
