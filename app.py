@@ -55,6 +55,8 @@ if "processing_status" not in st.session_state:
     st.session_state["processing_status"] = {}
 if "summary_rows" not in st.session_state:
     st.session_state["summary_rows"] = []
+if "process_triggered" not in st.session_state:
+    st.session_state["process_triggered"] = False # New state for explicit processing
 
 st.sidebar.header("🔐 AI Config")
 passcode = st.sidebar.text_input("Admin Passcode", type="password")
@@ -241,8 +243,25 @@ main_prompt = (
 
 uploaded_files = st.file_uploader("📤 Upload scanned invoice PDFs", type=["pdf"], accept_multiple_files=True)
 
+# Conditional display of buttons after file upload
 if uploaded_files:
     st.session_state["files_uploaded"] = True
+    
+    # Create two columns for the buttons
+    col1, col2 = st.columns([1, 1]) # Adjust ratios as needed
+    
+    with col1:
+        if st.button("🚀 Process Invoices", help="Click to start extracting data from uploaded invoices."):
+            st.session_state["process_triggered"] = True
+            st.info("Processing initiated. Please wait...")
+
+    with col2:
+        if st.button("🗑️ Clear All Files & Reset", help="Click to clear all uploaded files and extracted data."):
+            st.session_state.clear() # Clear all session state
+            st.rerun() # Rerun the app to reflect the cleared state
+
+# Only proceed with processing if files are uploaded AND the "Process Invoices" button was clicked
+if uploaded_files and st.session_state["process_triggered"]:
     total_files = len(uploaded_files)
     # Use a progress bar to show overall completion
     progress_text = st.empty()
@@ -455,7 +474,7 @@ if uploaded_files:
 # Get all processed results to display
 results = list(st.session_state["processed_results"].values())
 
-if results:
+if results and st.session_state["process_triggered"]: # Only show results if processing was triggered
     # Display completion animation
     if completed_json:
         st_lottie(completed_json, height=200, key="done_animation")
@@ -604,9 +623,7 @@ if results:
         st.balloons()
 
 else:
-    st.info("Upload one or more scanned invoices to get started.")
-
-# Add a "Clear All" button at the bottom
-if st.button("🗑️ Clear All Files & Reset", help="Click to clear all uploaded files and extracted data."):
-    st.session_state.clear() # Clear all session state
-    st.experimental_rerun() # Rerun the app to reflect the cleared state
+    if uploaded_files and not st.session_state["process_triggered"]:
+        st.info("Files uploaded. Click 'Process Invoices' to start extraction.")
+    elif not uploaded_files:
+        st.info("Upload one or more scanned invoices to get started.")
