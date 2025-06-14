@@ -94,7 +94,7 @@ def format_currency(x):
 
 def is_valid_gstin(gstin):
     """Validate GSTIN format with more flexibility"""
-    if not gstin:
+    if not gstin or not isinstance(gstin, str):
         return False
         
     # Clean the GSTIN: remove spaces, special characters, convert to uppercase
@@ -301,36 +301,28 @@ if uploaded_files:
                     tds_amount = round(taxable_amount * tds_rate / 100, 2)
                     amount_payable = total_amount - tds_amount
                     
-                    # Enhanced GSTIN handling
-                    original_gstin = seller_gstin
-                    gstin_status = "VALID"
-                    
-                    # Clean and validate GSTIN
+                    # Enhanced GSTIN handling (background processing)
                     if seller_gstin:
                         # Clean GSTIN by removing spaces and special characters
-                        seller_gstin = re.sub(r'[^A-Z0-9]', '', seller_gstin.upper())
+                        cleaned_gstin = re.sub(r'[^A-Z0-9]', '', seller_gstin.upper())
                         
                         # Validate the cleaned GSTIN
-                        if not is_valid_gstin(seller_gstin):
-                            gstin_status = "INVALID"
-                            
+                        if is_valid_gstin(cleaned_gstin):
+                            seller_gstin = cleaned_gstin
+                        else:
                             # Try to extract GSTIN from seller name as fallback
                             fallback_gstin = extract_gstin_from_text(seller_name)
-                            if fallback_gstin:
+                            if fallback_gstin and is_valid_gstin(fallback_gstin):
                                 seller_gstin = fallback_gstin
-                                gstin_status = "EXTRACTED_FROM_NAME"
+                            else:
+                                seller_gstin = ""  # Clear invalid GSTIN
                     else:
                         # Try to extract GSTIN from seller name if not provided
                         fallback_gstin = extract_gstin_from_text(seller_name)
-                        if fallback_gstin:
+                        if fallback_gstin and is_valid_gstin(fallback_gstin):
                             seller_gstin = fallback_gstin
-                            gstin_status = "EXTRACTED_FROM_NAME"
                         else:
-                            gstin_status = "MISSING"
-                    
-                    # Final GSTIN validation
-                    if not is_valid_gstin(seller_gstin):
-                        gstin_status = "INVALID"
+                            seller_gstin = ""  # Clear invalid GSTIN
                     
                     # Parse and format date
                     try:
@@ -339,11 +331,11 @@ if uploaded_files:
                     except:
                         date = ""
                     
-                    # Create narration text with GSTIN status
+                    # Create narration text
                     buyer_gstin_display = buyer_gstin or "N/A"
                     narration = (
                         f"Invoice {invoice_number} dated {date} "
-                        f"was issued by {seller_name} (GSTIN: {seller_gstin} - Status: {gstin_status}) "
+                        f"was issued by {seller_name} (GSTIN: {seller_gstin or 'N/A'}) "
                         f"to {buyer_name} (GSTIN: {buyer_gstin_display}), "
                         f"with a taxable amount of ₹{taxable_amount:,.2f}. "
                         f"Taxes applied - CGST: ₹{cgst:,.2f}, SGST: ₹{sgst:,.2f}, IGST: ₹{igst:,.2f}. "
@@ -353,15 +345,13 @@ if uploaded_files:
                         f"Amount Payable: ₹{amount_payable:,.2f}."
                     )
                     
-                    # Add GSTIN status to results
+                    # Add results
                     result_row = {
                         "File Name": file_name,
                         "Invoice Number": invoice_number,
                         "Date": date,
                         "Seller Name": seller_name,
                         "Seller GSTIN": seller_gstin,
-                        "GSTIN Status": gstin_status,
-                        "Original GSTIN": original_gstin,
                         "Buyer Name": buyer_name,
                         "Buyer GSTIN": buyer_gstin,
                         "Taxable Amount": taxable_amount,
@@ -383,10 +373,6 @@ if uploaded_files:
                 completed_count += 1
                 st.success(f"{file_name}: ✅ Done")
 
-                # Show GSTIN extraction details
-                if gstin_status != "VALID":
-                    st.warning(f"GSTIN Status: {gstin_status}")
-
         except Exception as e:
             error_row = {
                 "File Name": file_name,
@@ -394,8 +380,6 @@ if uploaded_files:
                 "Date": "",
                 "Seller Name": "",
                 "Seller GSTIN": "",
-                "GSTIN Status": "",
-                "Original GSTIN": "",
                 "Buyer Name": "",
                 "Buyer GSTIN": "",
                 "Taxable Amount": 0.0,
@@ -443,9 +427,9 @@ if results:
         
         # Reorder columns for better display
         display_cols = [
-            "File Name", "Invoice Number", "Date", "Seller Name", "Seller GSTIN", 
-            "GSTIN Status", "Buyer Name", "Buyer GSTIN", "Taxable Amount (₹)", 
-            "CGST (₹)", "SGST (₹)", "IGST (₹)", "Total Amount (₹)", "TDS Rate (%)", 
+            "File Name", "Invoice Number", "Date", "Seller Name", "Seller GSTIN",
+            "Buyer Name", "Buyer GSTIN", "Taxable Amount (₹)", "CGST (₹)", 
+            "SGST (₹)", "IGST (₹)", "Total Amount (₹)", "TDS Rate (%)", 
             "TDS Amount (₹)", "Amount Payable (₹)", "Place of Supply", 
             "Expense Ledger", "TDS", "Narration"
         ]
