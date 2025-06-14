@@ -151,7 +151,10 @@ if uploaded_files:
                 )
 
                 response_text = response.choices[0].message.content.strip()
-                if any(x in response_text.lower() for x in ["not an invoice", "i'm sorry", "unable to extract", "as an ai", "this appears to"]):
+try:
+    json_fields = columns
+    raw_data = json.loads(response_text)
+    row = [raw_data.get(field, "") for field in json_fields]
                     result_row = ["NOT AN INVOICE"] + ["-"] * (len(columns) - 1)
                 else:
                     try:
@@ -188,8 +191,11 @@ if uploaded_files:
                         row[15] = narration_text
                         result_row = row
 
-                    except:
-                        result_row = ["NOT AN INVOICE"] + ["-"] * (len(columns) - 1)
+                    except json.JSONDecodeError:
+    if "not an invoice" in response_text.lower():
+        result_row = ["NOT AN INVOICE"] + ["-"] * (len(columns) - 1)
+    else:
+        raise
 
                 st.session_state["processed_results"][file_name] = result_row
                 st.session_state["processing_status"][file_name] = "✅ Done"
