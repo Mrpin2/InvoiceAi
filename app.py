@@ -246,7 +246,7 @@ if uploaded_files:
                 response = client.chat.completions.create(
                     model="gpt-4o",
                     messages=chat_prompt,
-                    max_tokens=1500  # Increased for better extraction
+                    max_tokens=2000  # Increased for better extraction
                 )
 
                 response_text = response.choices[0].message.content.strip()
