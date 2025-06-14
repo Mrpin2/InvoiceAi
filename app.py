@@ -112,19 +112,28 @@ def is_valid_gstin(gstin):
         return False
         
     # Validate pattern: 2 digits + 10 alphanumeric + 1 letter + 1 alphanumeric + 1 letter
+    # This is the original, more flexible pattern.
     pattern = r"^\d{2}[A-Z0-9]{10}[A-Z]{1}[A-Z0-9]{1}[Z]{1}[A-Z0-9]{1}$"
     return bool(re.match(pattern, cleaned))
 
 def extract_gstin_from_text(text):
-    """Try to extract GSTIN from any text using pattern matching"""
+    """Try to extract VALID GSTIN from any text using pattern matching"""
+    if not text:
+        return ""
     # Look for GSTIN pattern in the text
-    matches = re.findall(r'\b\d{2}[A-Z0-9]{10}[A-Z]{1}[A-Z0-9]{1}Z[A-Z0-9]{1}\b', text.upper())
-    if matches:
-        return matches[0] # Return the first found valid GSTIN
+    # This pattern uses word boundaries to ensure full matches and captures the GSTIN group
+    matches = re.findall(r'\b(\d{2}[A-Z0-9]{10}[A-Z]{1}[A-Z0-9]{1}Z[A-Z0-9]{1})\b', text.upper())
+    
+    for match in matches:
+        if is_valid_gstin(match): # Explicitly validate each potential match
+            return match
     return ""
 
-def determine_tds_rate(expense_ledger, tds_str=""):
-    """Determine TDS rate based on expense ledger and TDS string"""
+def determine_tds_rate(expense_ledger, tds_str="", place_of_supply=""):
+    """Determine TDS rate based on expense ledger and TDS string, considering place of supply"""
+    if place_of_supply and place_of_supply.lower() == "foreign":
+        return 0.0 # TDS not applicable for foreign supply
+
     # First check if TDS string contains a specific rate
     if tds_str and isinstance(tds_str, str):
         # Look for percentage in the TDS string
@@ -143,7 +152,7 @@ def determine_tds_rate(expense_ledger, tds_str=""):
         for section, rate in section_rates.items():
             if section in tds_str.lower():
                 return rate
-        
+            
     # If no TDS string info, determine by expense ledger (simplified logic as per our chat)
     expense_ledger = expense_ledger.lower() if expense_ledger else ""
     
@@ -159,8 +168,11 @@ def determine_tds_rate(expense_ledger, tds_str=""):
     # Default to 0 if not applicable
     return 0.0
 
-def determine_tds_section(expense_ledger):
-    """Determine TDS section based on expense ledger (simplified to 194J for Professional Fees)"""
+def determine_tds_section(expense_ledger, place_of_supply=""):
+    """Determine TDS section based on expense ledger, considering place of supply"""
+    if place_of_supply and place_of_supply.lower() == "foreign":
+        return None # TDS not applicable for foreign supply, so no section
+
     expense_ledger = expense_ledger.lower() if expense_ledger else ""
     if "professional" in expense_ledger or "consultancy" in expense_ledger or "service" in expense_ledger:
         return "194J"
@@ -180,13 +192,13 @@ def extract_json_from_response(text):
             # json.loads expects a string, so apply it to the first matched string
             return json.loads(matches[0])
             
-        # Look for plain JSON
+        # Look for plain JSON (more lenient)
         start = text.find('{')
         end = text.rfind('}')
         if start != -1 and end != -1:
             return json.loads(text[start:end+1])
             
-        # Try parsing the whole text
+        # Try parsing the whole text if it seems like a direct JSON output
         return json.loads(text)
     except Exception:
         return None
@@ -214,16 +226,21 @@ main_prompt = (
     "  - If multiple HSN/SAC codes are present for different line items, extract the one that appears most prominently, or the first one listed. If only one is present for the whole invoice, use that.\n"
     "  - **If HSN/SAC is NOT found or explicitly stated, the value MUST be `null`. Do NOT guess or infer it.**\n"
     
-    "- 'expense_ledger': Classify the nature of expense and suggest a suitable ledger type "
-    "  (e.g., 'Office Supplies', 'Professional Fees', 'Software Subscription', 'Rent').\n"
+    "- 'expense_ledger': Classify the nature of expense and suggest a suitable ledger type. "
+    "  Examples: 'Office Supplies', 'Professional Fees', 'Software Subscription', 'Rent', "
+    "  'Cloud Services', 'Marketing Expenses', 'Travel Expenses'. "
+    "  For invoices from cloud providers (e.g., 'Google Cloud', 'AWS', 'Microsoft Azure'), classify as 'Cloud Services'."
+    "  If the expense is related to software or subscriptions, classify as 'Software Subscription'."
+    "  Aim for a general and universal ledger type if a precise one isn't obvious from the invoice details."
+    
     "- 'tds': Determine TDS applicability. State 'Yes - Section [X]' if applicable with a section, 'No' if clearly not, or 'Uncertain' if unclear. Always try to identify the TDS Section (e.g., 194J, 194C, 194I) if TDS is applicable.\n"
     
     "- 'place_of_supply': Crucial for Indian invoices to determine IGST applicability. "
-    "  - **PRIORITY 1:** Look for a field explicitly labeled 'Place of Supply'. Extract the value directly from there."
-    "  - **PRIORITY 2:** If 'Place of Supply' is not found, look for 'Ship To:' address. Extract the state/city from this address."
-    "  - **PRIORITY 3:** If 'Ship To:' is not found, look for 'Bill To:' address. Extract the state/city from this address."
-    "  - **PRIORITY 4:** If neither of the above, infer from the Customer/Buyer Address. Extract the state/city from this address."
-    "  - **SPECIAL CASE:** If the invoice is clearly an 'Export Invoice' or indicates foreign trade, set the value to 'Foreign'."
+    "  - **PRIORITY 1:** Look for a field explicitly labeled 'Place of Supply'. Extract the exact value directly from there (e.g., 'Delhi', 'Maharashtra')."
+    "  - **PRIORITY 2:** If 'Place of Supply' is not found, look for 'Ship To:' address. Extract only the State/City name from this address."
+    "  - **PRIORITY 3:** If 'Ship To:' is not found, look for 'Bill To:' address. Extract only the State/City name from this address."
+    "  - **PRIORITY 4:** If neither of the above, infer from the Customer/Buyer Address. Extract only the State/City name from this address."
+    "  - **SPECIAL CASE:** If the invoice text or context clearly indicates an export or foreign transaction (e.g., 'Export Invoice', foreign currency, foreign address), set the value to 'Foreign'."
     "  - **FALLBACK:** If none of the above are found or inferable, the value MUST be `null`."
     
     "Return 'NOT AN INVOICE' if the document is clearly not an invoice.\n"
@@ -296,13 +313,13 @@ if uploaded_files:
                             "HSN/SAC": "",
                             "Buyer Name": "",
                             "Buyer GSTIN": "",
-                            "Expense Ledger": "", # Moved here for consistency
+                            "Expense Ledger": "",
                             "Taxable Amount": 0.0,
                             "CGST": 0.0,
                             "SGST": 0.0,
                             "IGST": 0.0,
                             "Total Amount": 0.0,
-                            "TDS Applicability": "N/A", # Not applicable if not an invoice
+                            "TDS Applicability": "N/A",
                             "TDS Section": None,
                             "TDS Rate": 0.0,
                             "TDS Amount": 0.0,
@@ -319,11 +336,15 @@ if uploaded_files:
                     invoice_number = raw_data.get("invoice_number", "")
                     date = raw_data.get("date", "")
                     seller_name = raw_data.get("seller_name", "")
-                    seller_gstin = raw_data.get("gstin", "")
+                    # Enhanced GSTIN extraction
+                    seller_gstin = extract_gstin_from_text(str(raw_data.get("gstin", "")) + " " + str(seller_name))
+                    
                     hsn_sac = raw_data.get("hsn_sac", "")
                     buyer_name = raw_data.get("buyer_name", "")
-                    buyer_gstin = raw_data.get("buyer_gstin", "")
-                    expense_ledger = raw_data.get("expense_ledger", "") # Moved definition here
+                    # Enhanced GSTIN extraction
+                    buyer_gstin = extract_gstin_from_text(str(raw_data.get("buyer_gstin", "")) + " " + str(buyer_name))
+                    
+                    expense_ledger = raw_data.get("expense_ledger", "")
                     taxable_amount = safe_float(raw_data.get("taxable_amount", 0.0))
                     cgst = safe_float(raw_data.get("cgst", 0.0))
                     sgst = safe_float(raw_data.get("sgst", 0.0))
@@ -331,39 +352,25 @@ if uploaded_files:
                     place_of_supply = raw_data.get("place_of_supply", "")
                     tds_str = raw_data.get("tds", "")
                     
-                    # Calculate derived fields
+                    # Calculate derived fields, passing place_of_supply for TDS logic
                     total_amount = taxable_amount + cgst + sgst + igst
-                    tds_rate = determine_tds_rate(expense_ledger, tds_str)
+                    
+                    tds_rate = determine_tds_rate(expense_ledger, tds_str, place_of_supply)
+                    tds_section = determine_tds_section(expense_ledger, place_of_supply)
                     
                     tds_amount = round(taxable_amount * tds_rate / 100, 2) if tds_rate > 0 else 0.0
                     
                     amount_payable = total_amount - tds_amount
                     
-                    # Determine TDS Section
-                    tds_section = determine_tds_section(expense_ledger)
-                    
-                    # Determine TDS Applicability
+                    # Determine TDS Applicability (updated for 'Foreign' place of supply)
                     tds_applicability = "Uncertain"
-                    if tds_rate > 0 or tds_amount > 0:
+                    if place_of_supply and place_of_supply.lower() == "foreign":
+                        tds_applicability = "No"
+                    elif tds_rate > 0 or tds_amount > 0:
                         tds_applicability = "Yes"
                     elif "no" in str(tds_str).lower():
                         tds_applicability = "No"
 
-                    # Enhanced GSTIN handling
-                    if seller_gstin:
-                        seller_gstin = re.sub(r'[^A-Z0-9]', '', seller_gstin.upper())
-                    if not is_valid_gstin(seller_gstin):
-                        fallback_gstin = extract_gstin_from_text(str(seller_name) + " " + str(seller_gstin))
-                        if fallback_gstin:
-                            seller_gstin = fallback_gstin
-                            
-                    if buyer_gstin:
-                        buyer_gstin = re.sub(r'[^A-Z0-9]', '', buyer_gstin.upper())
-                    if not is_valid_gstin(buyer_gstin):
-                        fallback_buyer_gstin = extract_gstin_from_text(str(buyer_name) + " " + str(buyer_gstin))
-                        if fallback_buyer_gstin:
-                            buyer_gstin = fallback_buyer_gstin
-                    
                     # Parse and format date
                     try:
                         parsed_date = parser.parse(str(date), dayfirst=True)
@@ -394,7 +401,7 @@ if uploaded_files:
                         "HSN/SAC": hsn_sac,
                         "Buyer Name": buyer_name,
                         "Buyer GSTIN": buyer_gstin,
-                        "Expense Ledger": expense_ledger, # Moved position in result_row
+                        "Expense Ledger": expense_ledger,
                         "Taxable Amount": taxable_amount,
                         "CGST": cgst,
                         "SGST": sgst,
@@ -425,7 +432,7 @@ if uploaded_files:
                 "HSN/SAC": "",
                 "Buyer Name": "",
                 "Buyer GSTIN": "",
-                "Expense Ledger": "", # Moved here for consistency
+                "Expense Ledger": "",
                 "Taxable Amount": 0.0,
                 "CGST": 0.0,
                 "SGST": 0.0,
@@ -499,17 +506,17 @@ if results:
             "HSN/SAC",
             "Buyer Name",
             "Buyer GSTIN",
-            "Expense Ledger", # MOVED HERE
+            "Expense Ledger",
             "Taxable Amount (₹)",
             "CGST (₹)",
             "SGST (₹)",
             "IGST (₹)",
             "Total Amount (₹)",
-            "TDS Applicability", # MOVED HERE
-            "TDS Section",       # MOVED HERE
-            "TDS Rate (%)",      # MOVED HERE
-            "TDS Amount (₹)",    # MOVED HERE
-            "Amount Payable (₹)",# MOVED HERE
+            "TDS Applicability",
+            "TDS Section",
+            "TDS Rate (%)",
+            "TDS Amount (₹)",
+            "Amount Payable (₹)",
             "Place of Supply",
             "Narration"
             # The original 'TDS' column (tds_str from raw GPT output) is intentionally excluded from display_cols
@@ -582,7 +589,7 @@ if results:
     st.dataframe(df.isnull().sum().to_frame(name='Null Count'))
 
     if 'TDS Applicability' in df.columns and any(df['TDS Applicability'] == "Yes"):
-         st.balloons()
+        st.balloons()
     elif completed_count == total_files and completed_count > 0:
         st.balloons()
 else:
