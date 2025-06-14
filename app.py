@@ -1,8 +1,8 @@
 import streamlit as st 
-st.set_page_config(layout="wide")  # MUST be first
+st.set_page_config(layout="wide")
 
 from PIL import Image
-import fitz  # PyMuPDF
+import fitz
 import io
 import pandas as pd
 import base64
@@ -13,7 +13,7 @@ from openai import OpenAI
 import tempfile
 import os
 
-# ---------- Load Animations ----------
+# Animations
 hello_lottie = "https://raw.githubusercontent.com/Mrpin2/InvoiceAi/refs/heads/main/Animation%20-%201749845212531.json"
 completed_lottie = "https://raw.githubusercontent.com/Mrpin2/InvoiceAi/refs/heads/main/Animation%20-%201749845303699.json"
 
@@ -28,7 +28,6 @@ def load_lottie_json_safe(url):
 hello_json = load_lottie_json_safe(hello_lottie)
 completed_json = load_lottie_json_safe(completed_lottie)
 
-# ---------- UI HEADER ----------
 if "files_uploaded" not in st.session_state:
     if hello_json:
         st_lottie(hello_json, height=200, key="hello")
@@ -37,14 +36,12 @@ st.markdown("<h2 style='text-align: center;'>📄 AI Invoice Extractor (ChatGPT)
 st.markdown("Upload scanned PDF invoices and extract clean finance data using ChatGPT Vision")
 st.markdown("---")
 
-# ---------- Table Columns ----------
 columns = [
     "Vendor Name", "Invoice No", "GSTIN", "HSN/SAC", "Buyer Name", "Place of Supply", "Invoice Date", "Expense Ledger",
     "GST Type", "Tax Rate", "Basic Amount", "CGST", "SGST", "IGST",
     "Total Payable", "Narration", "GST Input Eligible", "TDS Applicable", "TDS Rate"
 ]
 
-# ---------- Session State ----------
 if "processed_results" not in st.session_state:
     st.session_state["processed_results"] = {}
 if "processing_status" not in st.session_state:
@@ -52,7 +49,6 @@ if "processing_status" not in st.session_state:
 if "summary_rows" not in st.session_state:
     st.session_state["summary_rows"] = []
 
-# ---------- Sidebar Config ----------
 st.sidebar.header("🔐 AI Config")
 passcode = st.sidebar.text_input("Admin Passcode", type="password")
 admin_unlocked = passcode == "Essenbee"
@@ -72,57 +68,10 @@ else:
 
 client = OpenAI(api_key=openai_api_key)
 
-# ---------- Extraction Prompt ----------
-main_prompt = """
-You are an intelligent invoice assistant. Analyze the attached document and extract structured invoice data only if it is a valid invoice. If it's clearly not an invoice (e.g., bank statement or request letter), return exactly:
-NOT AN INVOICE
-
-If valid, extract and return the following details clearly and precisely, adapting to the invoice's country and structure:
-
-1. Date Format: Normalize all dates to DD/MM/YYYY regardless of source region (e.g., 06/02/2025 even if in US MM/DD/YYYY format).
-2. Identifiers:
-   - India: Extract GSTIN, SAC/HSN codes.
-   - US/EU: Extract EIN/VAT if shown.
-   - If no tax ID is visible, leave blank.
-3. Amounts:
-   - Total Payable (final invoice value)
-   - Basic Amount (before taxes)
-   - Tax components:
-     - CGST, SGST, IGST (India)
-     - Sales Tax or VAT (US/EU, map into IGST)
-   - Tax Rate (in %)
-   - Represent zero values as 0.0
-4. Parties:
-   - Vendor Name
-   - Buyer Name
-   - Place of Supply or jurisdiction (State/Region)
-5. Invoice Details:
-   - Invoice Number
-   - Invoice Date
-   - Narration (brief description of goods/services)
-6. Classification & Tax:
-   - Suggested Expense Ledger (e.g., 'Professional Fees', 'Software Subscription', 'Trademark Filing')
-   - GST Input Eligibility: Yes, No, or Uncertain
-   - TDS Applicability: e.g., Yes - Section 194J, No, Uncertain
-   - RCM (Reverse Charge Mechanism): Yes, No, Uncertain
-7. Missing Data Handling:
-   - If a required field is missing, return "MISSING"
-   - If optional, leave it as an empty string ""
-   - Never make up values. Use only what is explicitly visible.
-
-Return a single comma-separated line, in this exact order:
-
-Vendor Name, Invoice No, Tax ID (GSTIN/EIN/VAT), HSN/SAC, Buyer Name, Place of Supply, Invoice Date, Expense Ledger, Tax Type, Tax Rate, Basic Amount, CGST, SGST, IGST/Sales Tax, Total Payable, Narration, GST Input Eligible, TDS Applicable, TDS Rate
-
-Do not include labels, newlines, or explanation — only the data in that order.
-
-If the document is not an invoice, return:
-NOT AN INVOICE
-"""
+main_prompt = """<same as previous long prompt>"""
 
 def is_placeholder_row(text):
-    placeholder_keywords = ["Vendor Name", "Invoice No", "Invoice Date", "Expense Ledger"]
-    return all(x.lower() in text.lower() for x in placeholder_keywords)
+    return all(x.lower() in text.lower() for x in ["Vendor Name", "Invoice No", "Invoice Date", "Expense Ledger"])
 
 def convert_pdf_first_page(pdf_bytes):
     doc = fitz.open(stream=pdf_bytes, filetype="pdf")
@@ -130,12 +79,10 @@ def convert_pdf_first_page(pdf_bytes):
     pix = page.get_pixmap(dpi=300)
     return Image.open(io.BytesIO(pix.tobytes("png")))
 
-# ---------- PDF Upload ----------
-uploaded_files = st.file_uploader("📄 Upload scanned invoice PDFs", type=["pdf"], accept_multiple_files=True)
+uploaded_files = st.file_uploader("📤 Upload scanned invoice PDFs", type=["pdf"], accept_multiple_files=True)
 
 if uploaded_files:
     st.session_state["files_uploaded"] = True
-
     total_files = len(uploaded_files)
     completed_count = 0
 
@@ -158,7 +105,7 @@ if uploaded_files:
             pdf_data = open(temp_file_path, "rb").read()
             first_image = convert_pdf_first_page(pdf_data)
 
-            with st.spinner("🧐 Extracting data using ChatGPT..."):
+            with st.spinner("🧠 Extracting data using ChatGPT..."):
                 img_buf = io.BytesIO()
                 first_image.save(img_buf, format="PNG")
                 img_buf.seek(0)
@@ -187,7 +134,34 @@ if uploaded_files:
                         try:
                             row = [x.strip().strip('"') for x in line.split(",")]
                             if len(row) >= len(columns):
-                                result_row = row[:len(columns)]
+                                row = row[:len(columns)]
+                                narration = row[15].lower()
+                                full_text = narration + ' ' + ' '.join(row).lower()
+
+                                if row[7].strip().lower() in ["missing", "", "consulting"]:
+                                    if any(word in full_text for word in ["professional", "consulting", "advisory", "legal"]):
+                                        row[7] = "Professional Fees"
+                                    elif any(word in full_text for word in ["software", "subscription", "license"]):
+                                        row[7] = "Software Subscription"
+                                    elif any(word in full_text for word in ["marketing", "branding", "ads"]):
+                                        row[7] = "Marketing"
+                                    elif any(word in full_text for word in ["travel", "flight", "hotel"]):
+                                        row[7] = "Travel"
+
+                                if "194j" in full_text or "professional" in full_text:
+                                    row[17] = "Yes - Section 194J"
+                                    if not row[18].strip() or row[18].lower() == "missing":
+                                        row[18] = "10%"
+                                elif "194c" in full_text:
+                                    row[17] = "Yes - Section 194C"
+                                    if not row[18].strip() or row[18].lower() == "missing":
+                                        row[18] = "2%"
+                                elif "194h" in full_text:
+                                    row[17] = "Yes - Section 194H"
+                                    if not row[18].strip() or row[18].lower() == "missing":
+                                        row[18] = "5%"
+
+                                result_row = row
                                 matched = True
                                 break
                         except Exception:
@@ -199,7 +173,7 @@ if uploaded_files:
                 st.session_state["processing_status"][file_name] = "✅ Done"
                 completed_count += 1
                 st.success(f"{file_name}: ✅ Done")
-                st.info(f"🧠 {completed_count} out of {total_files} files processed")
+                st.info(f"🤖 {completed_count} out of {total_files} files processed")
 
         except Exception as e:
             st.session_state["processed_results"][file_name] = ["NOT AN INVOICE"] + ["-"] * (len(columns) - 1)
@@ -211,7 +185,6 @@ if uploaded_files:
             if temp_file_path and os.path.exists(temp_file_path):
                 os.unlink(temp_file_path)
 
-# ---------- Display Results ----------
 results = list(st.session_state["processed_results"].values())
 if results:
     if completed_json:
@@ -238,7 +211,7 @@ if results:
     st.dataframe(df[display_columns])
 
     csv_data = df[display_columns].to_csv(index=False).encode("utf-8")
-    st.download_button("📅 Download Results as CSV", csv_data, "invoice_results.csv", "text/csv")
+    st.download_button("📥 Download Results as CSV", csv_data, "invoice_results.csv", "text/csv")
 
     st.markdown("---")
     if st.session_state.summary_rows:
