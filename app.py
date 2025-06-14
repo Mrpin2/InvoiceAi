@@ -16,7 +16,7 @@ import locale
 import re
 from dateutil import parser
 import json
-from contextlib import redirect_stdout # Added for debugging info
+# from contextlib import redirect_stdout # Removed for debugging info as requested
 
 locale.setlocale(locale.LC_ALL, '')
 
@@ -247,15 +247,16 @@ uploaded_files = st.file_uploader("📤 Upload scanned invoice PDFs", type=["pdf
 if uploaded_files:
     st.session_state["files_uploaded"] = True
     
-    # Create two columns for the buttons
-    col1, col2 = st.columns([1, 1]) # Adjust ratios as needed
+    # Create columns: one for "Process Invoices", a large empty one, and one for "Clear All"
+    # Adjust the middle ratio (e.g., 0.1, 0.5, 1, 2) to control the spacing
+    col_process, col_spacer, col_clear = st.columns([1, 4, 1]) # Adjust 4 for more or less space
     
-    with col1:
+    with col_process:
         if st.button("🚀 Process Invoices", help="Click to start extracting data from uploaded invoices."):
             st.session_state["process_triggered"] = True
             st.info("Processing initiated. Please wait...")
 
-    with col2:
+    with col_clear:
         if st.button("🗑️ Clear All Files & Reset", help="Click to clear all uploaded files and extracted data."):
             st.session_state.clear() # Clear all session state
             st.rerun() # Rerun the app to reflect the cleared state
@@ -605,16 +606,16 @@ if results and st.session_state["process_triggered"]: # Only show results if pro
         st.write("Raw results data for debugging:")
         st.json(results)
 
-    st.markdown("---")
-    st.markdown("### Debugging Information:")
-    st.write("#### DataFrame Info (from the display DataFrame):")
-    buffer = io.StringIO()
-    with redirect_stdout(buffer):
-        df.info(verbose=True, show_counts=True)
-    st.text(buffer.getvalue())
-
-    st.write("#### Null Counts per Column (from the display DataFrame):")
-    st.dataframe(df.isnull().sum().to_frame(name='Null Count'), use_container_width=True)
+    # Removed debugging information as requested
+    # st.markdown("---")
+    # st.markdown("### Debugging Information:")
+    # st.write("#### DataFrame Info (from the display DataFrame):")
+    # buffer = io.StringIO()
+    # with redirect_stdout(buffer):
+    #     df.info(verbose=True, show_counts=True)
+    # st.text(buffer.getvalue())
+    # st.write("#### Null Counts per Column (from the display DataFrame):")
+    # st.dataframe(df.isnull().sum().to_frame(name='Null Count'), use_container_width=True)
 
     # Trigger balloons for success feedback
     if 'TDS Applicability' in df.columns and any(df['TDS Applicability'] == "Yes"):
