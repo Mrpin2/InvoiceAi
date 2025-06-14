@@ -1,546 +1,499 @@
 import streamlit as st
-st.set_page_config(layout="wide")
-
-from PIL import Image
-import fitz
-import io
+from pydantic import BaseModel, Field
+from typing import List, Optional, Union
 import pandas as pd
-import base64
-import requests
-import traceback
-from streamlit_lottie import st_lottie
-from openai import OpenAI
-import tempfile
 import os
-import locale
-import re
-from dateutil import parser
-import json
+import tempfile
+import io
+from datetime import datetime
+import json # Import for JSON parsing from OpenAI response
+import base64 # Import for base64 encoding for OpenAI Vision
 
-locale.setlocale(locale.LC_ALL, '')
 
-# Lottie animations for better UX
-hello_lottie = "https://raw.githubusercontent.com/Mrpin2/InvoiceAi/refs/heads/main/Animation%20-%201749845212531.json"
-completed_lottie = "https://raw.githubusercontent.com/Mrpin2/InvoiceAi/refs/heads/main/Animation%20-%201749845303699.json"
-
-def load_lottie_json_safe(url):
-    """Loads Lottie animation JSON safely from a URL."""
-    try:
-        r = requests.get(url)
-        r.raise_for_status()
-        return r.json()
-    except requests.exceptions.RequestException as e:
-        st.warning(f"Could not load Lottie animation from {url}: {e}")
-        return None
-
-hello_json = load_lottie_json_safe(hello_lottie)
-completed_json = load_lottie_json_safe(completed_lottie)
-
-# Display initial Lottie animation if no files have been uploaded yet
-if "files_uploaded" not in st.session_state:
-    st.session_state["files_uploaded"] = False
-if not st.session_state["files_uploaded"]:
-    if hello_json:
-        st_lottie(hello_json, height=200, key="hello")
-
-st.markdown("<h2 style='text-align: center;'>📄 AI Invoice Extractor (OpenAI)</h2>", unsafe_allow_html=True)
-st.markdown("Upload scanned PDF invoices and extract structured finance data using GPT-4 Vision")
-st.markdown("---")
-
-# Initialize session states for storing results and processing status
-if "processed_results" not in st.session_state:
-    st.session_state["processed_results"] = {}
-if "processing_status" not in st.session_state:
-    st.session_state["processing_status"] = {}
-if "summary_rows" not in st.session_state:
-    st.session_state["summary_rows"] = []
-if "process_triggered" not in st.session_state:
-    st.session_state["process_triggered"] = False
-
-# This key is only for the file uploader to force reset
-if "file_uploader_key" not in st.session_state:
-    st.session_state["file_uploader_key"] = 0
-
-# --- Placeholders for dynamic content, including the file uploader ---
-# This placeholder will be used to completely redraw the file uploader
-file_uploader_placeholder = st.empty()
-
-# --- Admin/API Key Config ---
-st.sidebar.header("🔐 AI Config")
-passcode = st.sidebar.text_input("Admin Passcode", type="password")
-admin_unlocked = passcode == "Rajeev"
-
-openai_api_key = None
-if admin_unlocked:
-    st.sidebar.success("🔓 Admin access granted.")
-    openai_api_key = st.secrets.get("OPENAI_API_KEY")
-    if not openai_api_key:
-        st.sidebar.error("OPENAI_API_KEY missing in Streamlit secrets.")
-        st.stop()
-else:
-    openai_api_key = st.sidebar.text_input("🔑 Enter your OpenAI API Key", type="password")
-    if not openai_api_key:
-        st.sidebar.warning("Please enter a valid API key to continue.")
-        st.stop()
+# --- Import Libraries for Both Models ---
+try:
+    from google import genai
+except ImportError:
+    st.warning("The 'google-generativeai' library is not installed. Gemini functionality will be unavailable.")
 
 try:
-    client = OpenAI(api_key=openai_api_key)
-except Exception as e:
-    st.error(f"Failed to initialize OpenAI client. Check your API key: {e}")
-    st.stop()
+    from openai import OpenAI
+except ImportError:
+    st.warning("The 'openai' library is not installed. OpenAI functionality will be unavailable.")
 
-# --- Functions remain the same ---
-def convert_pdf_first_page(pdf_bytes):
-    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
-    page = doc.load_page(0)
-    pix = page.get_pixmap(dpi=300)
-    img_bytes = pix.tobytes("png")
-    return Image.open(io.BytesIO(img_bytes))
 
-def safe_float(x):
-    try:
-        cleaned = str(x).replace(",", "").replace("₹", "").replace("$", "").strip()
-        return float(cleaned) if cleaned else 0.0
-    except (ValueError, TypeError):
-        return 0.0
+# --- Pydantic Models (Common for both APIs) ---
+class LineItem(BaseModel):
+    description: str
+    quantity: float
+    gross_worth: float
+    hsn_sac: Optional[str] = None # Added HSN/SAC
 
-def format_currency(x):
-    try:
-        if isinstance(x, str) and x.startswith('₹'):
-            return x
-        return f"₹{safe_float(x):,.2f}"
-    except:
-        return "₹0.00"
+class Invoice(BaseModel):
+    invoice_number: str
+    date: str
+    gstin: str # Seller GSTIN
+    seller_name: str
+    buyer_name: str
+    buyer_gstin: Optional[str] = None
+    line_items: List[LineItem]
+    total_gross_worth: float
+    cgst: Optional[float] = None
+    sgst: Optional[float] = None
+    igst: Optional[float] = None
+    place_of_supply: Optional[str] = None
+    expense_ledger: Optional[str] = None
+    tds: Optional[str] = None
+    rcm_applicability: Optional[str] = None # Added RCM Applicability
 
-def is_valid_gstin(gstin):
-    if not gstin:
-        return False
-    cleaned = re.sub(r'[^A-Z0-9]', '', gstin.upper())
-    if len(cleaned) != 15:
-        return False
-    pattern = r"^\d{2}[A-Z0-9]{10}[A-Z]{1}[A-Z0-9]{1}[Z]{1}[A-Z0-9]{1}$"
-    return bool(re.match(pattern, cleaned))
 
-def extract_gstin_from_text(text):
-    if not text:
+# --- Utility Functions for UI/Data Formatting ---
+def parse_date_safe(date_str: str) -> str:
+    """Attempts to parse a date string into DD/MM/YYYY format."""
+    if not date_str:
         return ""
-    matches = re.findall(r'\b(\d{2}[A-Z0-9]{10}[A-Z]{1}[A-Z0-9]{1}Z[A-Z0-9]{1})\b', text.upper())
-    for match in matches:
-        if is_valid_gstin(match):
-            return match
-    return ""
-
-def determine_tds_rate(expense_ledger, tds_str="", place_of_supply=""):
-    if place_of_supply and place_of_supply.lower() == "foreign":
-        return 0.0
-    if tds_str and isinstance(tds_str, str):
-        match = re.search(r'(\d+(\.\d+)?)%', tds_str)
-        if match:
-            return float(match.group(1))
-        section_rates = { "194j": 10.0, "194c": 1.0, "194i": 10.0, "194h": 5.0, "194q": 0.1 }
-        for section, rate in section_rates.items():
-            if section in tds_str.lower():
-                return rate
-    expense_ledger = expense_ledger.lower() if expense_ledger else ""
-    if "professional" in expense_ledger or "consultancy" in expense_ledger or "service" in expense_ledger:
-        return 10.0
-    if "contract" in expense_ledger or "work" in expense_ledger:
-        return 1.0
-    if "rent" in expense_ledger:
-        return 10.0
-    return 0.0
-
-def determine_tds_section(expense_ledger, place_of_supply=""):
-    if place_of_supply and place_of_supply.lower() == "foreign":
-        return None
-    expense_ledger = expense_ledger.lower() if expense_ledger else ""
-    if "professional" in expense_ledger or "consultancy" in expense_ledger or "service" in expense_ledger:
-        return "194J"
-    elif "contract" in expense_ledger or "work" in expense_ledger:
-        return "194C"
-    elif "rent" in expense_ledger:
-        return "194I"
-    return None
-
-def extract_json_from_response(text):
-    try:
-        matches = re.findall(r'```json\s*({.*?})\s*```', text, re.DOTALL)
-        if matches:
-            return json.loads(matches[0])
-        start = text.find('{')
-        end = text.rfind('}')
-        if start != -1 and end != -1:
-            return json.loads(text[start:end+1])
-        return json.loads(text)
-    except Exception:
-        return None
-
-main_prompt = (
-    "You are an expert at extracting structured data from Indian invoices. "
-    "Your task is to extract information into a JSON object with the following keys. "
-    "If a key's value is not explicitly present or derivable from the invoice, use `null` for that value. "
-    "Keys to extract: invoice_number, date, gstin (seller's GSTIN), seller_name, buyer_name, buyer_gstin, "
-    "taxable_amount, cgst, sgst, igst, place_of_supply, expense_ledger, tds, hsn_sac. "
-    
-    "GUIDELINES FOR EXTRACTION:\n"
-    "- 'invoice_number': The unique identifier of the invoice. Extract as is.\n"
-    "- 'date': The invoice date in DD/MM/YYYY format. If year is 2-digit, assume current century (e.g., 24 -> 2024).\n"
-    "- 'taxable_amount': This is the subtotal, the amount BEFORE any taxes (CGST, SGST, IGST) are applied. Must be a number.\n"
-    "- 'gstin': The GSTIN of the seller (the entity issuing the invoice). Must be a 15-character alphanumeric string. Prioritize the GSTIN explicitly labeled as 'GSTIN' or associated with the seller's main details.\n"
-    "- 'buyer_gstin': The GSTIN of the buyer (the entity receiving the invoice). Must be a 15-character alphanumeric string. Prioritize the GSTIN explicitly labeled as 'Buyer GSTIN' or associated with the buyer's details.\n"
-    "- 'hsn_sac': Crucial for Indian invoices. "
-    "  - HSN (Harmonized System of Nomenclature) is for goods."
-    "  - SAC (Service Accounting Code) is for services."
-    "  - **ONLY extract the HSN/SAC code if it is explicitly mentioned on the invoice.** "
-    "  - It is typically a 4, 6, or 8-digit numeric code, sometimes alphanumeric."
-    "  - Look for labels like 'HSN Code', 'SAC Code', 'HSN/SAC', or just the code itself near item descriptions."
-    "  - If multiple HSN/SAC codes are present for different line items, extract the one that appears most prominently, or the first one listed. If only one is present for the whole invoice, use that."
-    "  - **If HSN/SAC is NOT found or explicitly stated, the value MUST be `null`. Do NOT guess or infer it.**\n"
-    
-    "- 'expense_ledger': Classify the nature of expense and suggest a suitable ledger type. "
-    "  Examples: 'Office Supplies', 'Professional Fees', 'Software Subscription', 'Rent', "
-    "  'Cloud Services', 'Marketing Expenses', 'Travel Expenses'. "
-    "  For invoices from cloud providers (e.g., 'Google Cloud', 'AWS', 'Microsoft Azure', 'DigitalOcean'), classify as 'Cloud Services'."
-    "  If the expense is clearly related to software licenses, subscriptions, or SaaS, classify as 'Software Subscription'."
-    "  Aim for a general and universal ledger type if a precise one isn't obvious from the invoice details.\n"
-    
-    "- 'tds': Determine TDS applicability. State 'Yes - Section [X]' if applicable with a section, 'No' if clearly not, or 'Uncertain' if unclear. Always try to identify the TDS Section (e.g., 194J, 194C, 194I) if TDS is applicable.\n"
-    
-    "- 'place_of_supply': Crucial for Indian invoices to determine IGST applicability. "
-    "  - **PRIORITY 1:** Look for a field explicitly labeled 'Place of Supply'. Extract the exact State/City name from this field (e.g., 'Delhi', 'Maharashtra')."
-    "  - **PRIORITY 2:** If 'Place of Supply' is not found, look for a 'Ship To:' address. Extract ONLY the State/City name from this address."
-    "  - **PRIORITY 3:** If 'Ship To:' is not found, look for a 'Bill To:' address. Extract ONLY the State/City name from this address."
-    "  - **PRIORITY 4:** If neither of the above, infer from the Customer/Buyer Address. Extract ONLY the State/City name from this address."
-    "  - **SPECIAL CASE:** If the invoice text or context clearly indicates an export or foreign transaction (e.g., 'Export Invoice', mentions 'Foreign' address, non-Indian currency as primary total, or foreign recipient details), set the value to 'Foreign'."
-    "  - **FALLBACK:** If none of the above are found or inferable, the value MUST be `null`."
-    
-    "Return 'NOT AN INVOICE' if the document is clearly not an invoice.\n"
-    "Ensure the JSON output is clean and directly parsable."
-)
-
-# Render the file uploader using the placeholder
-with file_uploader_placeholder.container():
-    uploaded_files = st.file_uploader(
-        "📤 Upload scanned invoice PDFs",
-        type=["pdf"],
-        accept_multiple_files=True,
-        key=f"file_uploader_{st.session_state.file_uploader_key}"
-    )
-
-    # Store uploaded files in session state to persist across reruns and allow clearing
-    if uploaded_files:
-        st.session_state["uploaded_files"] = uploaded_files
-        st.session_state["files_uploaded"] = True
-    else:
-        st.session_state["uploaded_files"] = []
-        st.session_state["files_uploaded"] = False
-
-# Conditional display of buttons after file upload
-if st.session_state["files_uploaded"] or st.session_state["processed_results"]:
-    col_process, col_spacer, col_clear = st.columns([1, 4, 1])
-    
-    with col_process:
-        if st.button("🚀 Process Invoices", help="Click to start extracting data from uploaded invoices."):
-            st.session_state["process_triggered"] = True
-            st.info("Processing initiated. Please wait...")
-
-    with col_clear:
-        if st.button("🗑️ Clear All Files & Reset", help="Click to clear all uploaded files and extracted data."):
-            # Increment key BEFORE clearing session_state to ensure uploader reset
-            st.session_state["file_uploader_key"] += 1
-            
-            # Clear all relevant session state variables explicitly
-            # It's safer to clear individual keys that you manage, rather than st.session_state.clear()
-            # especially when trying to maintain a widget's key for explicit reset.
-            st.session_state["files_uploaded"] = False
-            st.session_state["processed_results"] = {}
-            st.session_state["processing_status"] = {}
-            st.session_state["summary_rows"] = []
-            st.session_state["process_triggered"] = False
-            st.session_state["uploaded_files"] = [] # Explicitly empty this list
-
-            # Clear the placeholder to remove the old file uploader instance
-            file_uploader_placeholder.empty()
-            
-            # This rerun will redraw everything, including a *new* file uploader with the incremented key
-            st.rerun()
-
-# Only proceed with processing if files are uploaded AND the "Process Invoices" button was clicked
-if st.session_state["uploaded_files"] and st.session_state["process_triggered"]:
-    total_files = len(st.session_state["uploaded_files"])
-    progress_text = st.empty()
-    progress_bar = st.progress(0)
-    
-    completed_count = 0
-
-    for idx, file in enumerate(st.session_state["uploaded_files"]):
-        file_name = file.name
-        progress_text.text(f"Processing file: {file_name} ({idx+1}/{total_files})")
-        progress_bar.progress((idx + 1) / total_files)
-
-        if file_name in st.session_state["processed_results"]:
-            completed_count += 1
-            continue
-
-        st.markdown(f"**Current File: {file_name}**")
-        st.session_state["processing_status"][file_name] = "⏳ Pending..."
-
-        temp_file_path = None
-        response_text = None
+    # Try common Indian date formats
+    formats = ["%d/%m/%Y", "%d-%m-%Y", "%Y-%m-%d", "%d %b %Y", "%d %B %Y", "%Y/%m/%d"]
+    for fmt in formats:
         try:
-            with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
-                tmp.write(file.getvalue())
-                temp_file_path = tmp.name
+            return datetime.strptime(date_str, fmt).strftime("%d/%m/%Y")
+        except ValueError:
+            continue
+    # If no format matches, return original string or a placeholder
+    return date_str # Or "Invalid Date"
 
-            with open(temp_file_path, "rb") as f:
-                pdf_data = f.read()
-                
-            first_image = convert_pdf_first_page(pdf_data)
+def format_currency(amount: Optional[float]) -> str:
+    """Formats a float as an Indian Rupee currency string."""
+    if amount is None:
+        return "₹ N/A"
+    return f"₹ {amount:,.2f}" # Formats with commas and 2 decimal places
 
-            with st.spinner(f"🧠 Extracting data from {file_name} using GPT-4 Vision..."):
-                img_buf = io.BytesIO()
-                first_image.save(img_buf, format="PNG")
-                img_buf.seek(0)
-                base64_image = base64.b64encode(img_buf.read()).decode()
+# --- Extraction Functions (Model-Specific) ---
 
-                chat_prompt = [
-                    {
-                        "role": "user",
-                        "content": [
-                            {"type": "text", "text": main_prompt},
-                            {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{base64_image}"}}
-                        ]
-                    }
-                ]
-
-                response = client.chat.completions.create(
-                    model="gpt-4o",
-                    messages=chat_prompt,
-                    max_tokens=1500
-                )
-
-                response_text = response.choices[0].message.content.strip()
-                raw_data = extract_json_from_response(response_text)
-                
-                if raw_data is None:
-                    if "not an invoice" in response_text.lower():
-                        result_row = {
-                            "File Name": file_name,
-                            "Invoice Number": "NOT AN INVOICE",
-                            "Date": "", "Seller Name": "", "Seller GSTIN": "",
-                            "HSN/SAC": "", "Buyer Name": "", "Buyer GSTIN": "",
-                            "Expense Ledger": "", "Taxable Amount": 0.0,
-                            "CGST": 0.0, "SGST": 0.0, "IGST": 0.0, "Total Amount": 0.0,
-                            "TDS Applicability": "N/A", "TDS Section": None,
-                            "TDS Rate": 0.0, "TDS Amount": 0.0, "Amount Payable": 0.0,
-                            "Place of Supply": "", "TDS": "",
-                            "Narration": "This document was identified as not an invoice."
-                        }
-                    else:
-                        st.warning(f"GPT returned non-JSON or unparsable response for {file_name}. See raw output below.")
-                        raise ValueError(f"GPT returned non-JSON response or unexpected format for {file_name}.")
-                else:
-                    invoice_number = raw_data.get("invoice_number", "")
-                    date = raw_data.get("date", "")
-                    seller_name = raw_data.get("seller_name", "")
-                    seller_gstin = raw_data.get("gstin", "")
-                    hsn_sac = raw_data.get("hsn_sac", "")
-                    buyer_name = raw_data.get("buyer_name", "")
-                    buyer_gstin = raw_data.get("buyer_gstin", "")
-                    expense_ledger = raw_data.get("expense_ledger", "")
-                    taxable_amount = safe_float(raw_data.get("taxable_amount", 0.0))
-                    cgst = safe_float(raw_data.get("cgst", 0.0))
-                    sgst = safe_float(raw_data.get("sgst", 0.0))
-                    igst = safe_float(raw_data.get("igst", 0.0))
-                    place_of_supply = raw_data.get("place_of_supply", "")
-                    tds_str = raw_data.get("tds", "")
-
-                    total_amount = taxable_amount + cgst + sgst + igst
-                    tds_rate = determine_tds_rate(expense_ledger, tds_str, place_of_supply)
-                    tds_section = determine_tds_section(expense_ledger, place_of_supply)
-                    tds_amount = round(taxable_amount * tds_rate / 100, 2) if tds_rate > 0 else 0.0
-                    amount_payable = total_amount - tds_amount
-                    
-                    tds_applicability = "Uncertain"
-                    if place_of_supply and place_of_supply.lower() == "foreign":
-                        tds_applicability = "No"
-                    elif tds_rate > 0 or tds_amount > 0:
-                        tds_applicability = "Yes"
-                    elif "no" in str(tds_str).lower():
-                        tds_applicability = "No"
-
-                    try:
-                        parsed_date = parser.parse(str(date), dayfirst=True)
-                        date = parsed_date.strftime("%d/%m/%Y")
-                    except:
-                        date = ""
-                        
-                    buyer_gstin_display = buyer_gstin or "N/A"
-                    narration = (
-                        f"Invoice {invoice_number or 'N/A'} dated {date or 'N/A'} "
-                        f"was issued by {seller_name or 'N/A'} (GSTIN: {seller_gstin or 'N/A'}, HSN/SAC: {hsn_sac or 'N/A'}) "
-                        f"to {buyer_name or 'N/A'} (GSTIN: {buyer_gstin_display}), "
-                        f"with a taxable amount of ₹{taxable_amount:,.2f}. "
-                        f"Taxes applied - CGST: ₹{cgst:,.2f}, SGST: ₹{sgst:,.2f}, IGST: ₹{igst:,.2f}. "
-                        f"Total Amount: ₹{total_amount:,.2f}. "
-                        f"Place of supply: {place_of_supply or 'N/A'}. Expense: {expense_ledger or 'N/A'}. "
-                        f"TDS: {tds_applicability} (Section: {tds_section or 'N/A'}) @ {tds_rate}% (₹{tds_amount:,.2f}). "
-                        f"Amount Payable: ₹{amount_payable:,.2f}."
-                    )
-                    
-                    result_row = {
-                        "File Name": file_name,
-                        "Invoice Number": invoice_number,
-                        "Date": date,
-                        "Seller Name": seller_name,
-                        "Seller GSTIN": seller_gstin,
-                        "HSN/SAC": hsn_sac,
-                        "Buyer Name": buyer_name,
-                        "Buyer GSTIN": buyer_gstin,
-                        "Expense Ledger": expense_ledger,
-                        "Taxable Amount": taxable_amount,
-                        "CGST": cgst,
-                        "SGST": sgst,
-                        "IGST": igst,
-                        "Total Amount": total_amount,
-                        "TDS Applicability": tds_applicability,
-                        "TDS Section": tds_section,
-                        "TDS Rate": tds_rate,
-                        "TDS Amount": tds_amount,
-                        "Amount Payable": amount_payable,
-                        "Place of Supply": place_of_supply,
-                        "TDS": tds_str,
-                        "Narration": narration
-                    }
-
-                st.session_state["processed_results"][file_name] = result_row
-                st.session_state["processing_status"][file_name] = "✅ Done"
-                completed_count += 1
-                st.success(f"{file_name}: ✅ Done")
-
-        except Exception as e:
-            error_row = {
-                "File Name": file_name,
-                "Invoice Number": "PROCESSING ERROR",
-                "Date": "", "Seller Name": "", "Seller GSTIN": "",
-                "HSN/SAC": "", "Buyer Name": "", "Buyer GSTIN": "",
-                "Expense Ledger": "", "Taxable Amount": 0.0,
-                "CGST": 0.0, "SGST": 0.0, "IGST": 0.0, "Total Amount": 0.0,
-                "TDS Applicability": "Uncertain", "TDS Section": None,
-                "TDS Rate": 0.0, "TDS Amount": 0.0, "Amount Payable": 0.0,
-                "Place of Supply": "", "TDS": "",
-                "Narration": f"Error processing file: {str(e)}. Raw response: {response_text if response_text else 'No response received from GPT.'}"
-            }
-            st.session_state["processed_results"][file_name] = error_row
-            st.session_state["processing_status"][file_name] = "❌ Error"
-            st.error(f"❌ Error processing {file_name}: {e}")
-            if response_text:
-                st.text_area(f"Raw Output ({file_name}) - Error Details", response_text, height=200)
-            else:
-                st.text_area(f"Raw Output ({file_name}) - Error Details", "No response received from GPT.", height=100)
-
-        finally:
-            if temp_file_path and os.path.exists(temp_file_path):
-                os.unlink(temp_file_path)
-    
-    progress_bar.empty()
-    progress_text.empty()
-
-results = list(st.session_state["processed_results"].values())
-
-if results and st.session_state.get("process_triggered", False):
-    if completed_json:
-        st_lottie(completed_json, height=200, key="done_animation")
-
-    st.markdown("<h3 style='text-align: center;'>🎉 Yippie! All invoices Processed!!! 😊</h3>", unsafe_allow_html=True)
+def extract_from_gemini(
+    client_instance: 'genai.Client', # Type hint as string literal for forward reference if needed
+    gemini_model_id: str,
+    file_path: str,
+    pydantic_schema: BaseModel,
+) -> Optional[Invoice]:
+    """Extracts structured data from an invoice PDF using Gemini Vision."""
+    display_name = os.path.basename(file_path)
+    gemini_file_resource = None
 
     try:
-        df = pd.DataFrame(results)
-        
-        currency_cols_mapping = {
-            "Taxable Amount": "Taxable Amount (₹)", "CGST": "CGST (₹)", "SGST": "SGST (₹)",
-            "IGST": "IGST (₹)", "Total Amount": "Total Amount (₹)", "TDS Amount": "TDS Amount (₹)",
-            "Amount Payable": "Amount Payable (₹)"
-        }
-        for original_col, display_col in currency_cols_mapping.items():
-            if original_col in df.columns:
-                df[display_col] = df[original_col].apply(format_currency)
-            else:
-                df[display_col] = "₹0.00"
+        st.info(f"Gemini: Uploading '{display_name}' to Gemini File API...")
+        gemini_file_resource = client_instance.files.upload(
+            file=file_path,
+            config={'display_name': display_name.split('.')[0]}
+        )
+        st.success(f"Gemini: '{display_name}' uploaded. Gemini file name: {gemini_file_resource.name}")
 
-        if 'TDS Rate' in df.columns:
-            df['TDS Rate'] = pd.to_numeric(df['TDS Rate'], errors='coerce').fillna(0.0)
-            df['TDS Rate (%)'] = df['TDS Rate'].apply(lambda x: f"{x:.1f}%" if x > 0 else "0.0%")
-        else:
-            df['TDS Rate (%)'] = "0.0%"
-
-        display_cols = [
-            "File Name", "Invoice Number", "Date", "Seller Name", "Seller GSTIN", "HSN/SAC",
-            "Buyer Name", "Buyer GSTIN", "Expense Ledger", "Taxable Amount (₹)", "CGST (₹)",
-            "SGST (₹)", "IGST (₹)", "Total Amount (₹)", "TDS Applicability", "TDS Section",
-            "TDS Rate (%)", "TDS Amount (₹)", "Amount Payable (₹)", "Place of Supply", "Narration"
-        ]
-        actual_display_cols = [col for col in display_cols if col in df.columns]
-
-        st.dataframe(
-            df[actual_display_cols],
-            column_order=actual_display_cols,
-            column_config={
-                "HSN/SAC": st.column_config.TextColumn("HSN/SAC", help="Harmonized System of Nomenclature / Service Accounting Code", default="N/A"),
-                "TDS Section": st.column_config.TextColumn("TDS Section", help="Applicable TDS Section (e.g., 194J)", default="N/A"),
-                "TDS Applicability": st.column_config.TextColumn("TDS Applicability", help="Indicates if TDS is applicable (Yes/No/Uncertain)", default="Uncertain"),
-                "Taxable Amount (₹)": st.column_config.TextColumn("Taxable Amount (₹)"),
-                "CGST (₹)": st.column_config.TextColumn("CGST (₹)"),
-                "SGST (₹)": st.column_config.TextColumn("SGST (₹)"),
-                "IGST (₹)": st.column_config.TextColumn("IGST (₹)"),
-                "Total Amount (₹)": st.column_config.TextColumn("Total Amount (₹)"),
-                "TDS Amount (₹)": st.column_config.TextColumn("TDS Amount (₹)"),
-                "Amount Payable (₹)": st.column_config.TextColumn("Amount Payable (₹)")
-            },
-            hide_index=True,
-            use_container_width=True
+        prompt = (
+            "Extract all relevant and clear information from the invoice, adhering to Indian standards "
+            "for dates (DD/MM/YYYY or DD-MM-YYYY) and codes (like GSTIN, HSN/SAC). "
+            "Accurately identify the total amount payable. "
+            "For each line item, extract 'description', 'quantity', 'gross_worth', and 'hsn_sac' (if available). "
+            "Classify the nature of expense and suggest an "
+            "applicable ledger type (e.g., 'Office Supplies', 'Professional Fees', 'Software Subscription'). "
+            "Determine TDS applicability (e.g., 'Yes - Section 194J', 'No', 'Uncertain'). "
+            "Determine reverse charge GST (RCM) applicability (e.g., 'Yes', 'No', 'Uncertain'). "
+            "Handle missing data appropriately by setting fields to null or an empty string where "
+            "Optional, and raise an issue if critical data is missing for required fields. "
+            "Do not make assumptions or perform calculations beyond what's explicitly stated in the invoice text. "
+            "If a value is clearly zero, represent it as 0.0 for floats. For dates, prefer DD/MM/YYYY."
+        )
+        st.info(f"Gemini: Sending '{display_name}' to model '{gemini_model_id}' for extraction...")
+        response = client_instance.models.generate_content(
+            model=gemini_model_id,
+            contents=[prompt, gemini_file_resource],
+            config={'response_mime_type': 'application/json', 'response_schema': pydantic_schema}
         )
 
-        download_df = df.copy()
-        for original_col, display_col in currency_cols_mapping.items():
-            if display_col in download_df.columns:
-                download_df = download_df.drop(columns=[display_col])
-        if 'TDS Rate (%)' in download_df.columns:
-            download_df = download_df.drop(columns=['TDS Rate (%)'])
-        
-        download_cols_ordered = [col for col in display_cols if col not in currency_cols_mapping.values() and col != 'TDS Rate (%)']
-        for col_name in ["Taxable Amount", "CGST", "SGST", "IGST", "Total Amount", "TDS Amount", "Amount Payable", "TDS Rate"]:
-            if col_name in df.columns and col_name not in download_cols_ordered:
-                 download_cols_ordered.append(col_name)
+        st.success(f"Gemini: Data extracted for '{display_name}'.")
+        return response.parsed
 
-        csv_data = download_df[download_cols_ordered].to_csv(index=False).encode("utf-8")
-        st.download_button("📥 Download Results as CSV", csv_data, "invoice_results.csv", "text/csv")
-
-        excel_buffer = io.BytesIO()
-        try:
-            with pd.ExcelWriter(excel_buffer, engine='xlsxwriter') as writer:
-                download_df[download_cols_ordered].to_excel(writer, index=False, sheet_name="Invoice Data")
-            st.download_button(
-                label="📥 Download Results as Excel",
-                data=excel_buffer.getvalue(),
-                file_name="invoice_results.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            )
-        except Exception as e:
-            st.error(f"Failed to create Excel file for download: {str(e)}")
-            
     except Exception as e:
-        st.error(f"An unexpected error occurred when trying to display or download results: {str(e)}")
-        st.write("Raw results data for debugging:")
-        st.json(results)
+        st.error(f"Error processing '{display_name}' with Gemini: {e}")
+        st.exception(e)
+        return None
+    finally:
+        if gemini_file_resource:
+            try:
+                st.info(f"Gemini: Attempting to delete '{gemini_file_resource.name}' from File API...")
+                # client_instance.files.delete is part of the newer genai library versions
+                if hasattr(client_instance, 'files') and hasattr(client_instance.files, 'delete'):
+                    client_instance.files.delete(name=gemini_file_resource.name)
+                    st.success(f"Gemini: Successfully deleted '{gemini_file_resource.name}'.")
+                else:
+                    st.warning(f"Gemini: File API client does not support direct deletion or method not found. Manual cleanup may be required.")
+            except Exception as e_del:
+                st.warning(f"Gemini: Could not delete '{gemini_file_resource.name}': {e_del}")
 
-    if 'TDS Applicability' in df.columns and any(df['TDS Applicability'] == "Yes"):
-        st.balloons()
-    elif completed_count == total_files and completed_count > 0:
-        st.balloons()
 
-else:
-    if not st.session_state.get("uploaded_files") and not st.session_state.get("process_triggered", False) and not st.session_state.get("processed_results"):
-        st.info("Upload one or more scanned invoices to get started.")
-    elif st.session_state.get("uploaded_files") and not st.session_state.get("process_triggered", False):
-        st.info("Files uploaded. Click 'Process Invoices' to start extraction.")
+def extract_from_openai(
+    client_instance: 'OpenAI', # Type hint as string literal
+    openai_model_id: str,
+    file_path: str,
+    pydantic_schema: BaseModel,
+) -> Optional[Invoice]:
+    """Extracts structured data from an invoice PDF/image using OpenAI Vision."""
+    display_name = os.path.basename(file_path)
+
+    try:
+        # Read the file bytes and base64 encode for OpenAI Vision
+        with open(file_path, "rb") as f:
+            file_content_bytes = f.read()
+        base64_file = base64.b64encode(file_content_bytes).decode('utf-8')
+
+        system_prompt = (
+            "You are an expert invoice data extractor. Extract all specified details from the provided invoice document. "
+            "Output the data strictly as a JSON object conforming to the following Pydantic schema structure. "
+            "Ensure dates are in DD/MM/YYYY format. "
+            "If a field is not found or is optional, set it to `null` or an empty string as appropriate. "
+            "Here is the JSON schema you must adhere to:\n"
+            f"```json\n{pydantic_schema.schema_json(indent=2)}\n```\n"
+            "Do not include any conversational text or explanations outside the JSON. "
+            "Be very precise with amounts and details, including all line items if present."
+        )
+
+        user_prompt_text = "Extract invoice data according to the provided schema from this document."
+
+        st.info(f"OpenAI: Sending '{display_name}' to model '{openai_model_id}' for extraction...")
+
+        response = client_instance.chat.completions.create(
+            model=openai_model_id,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": [
+                    {"type": "text", "text": user_prompt_text},
+                    {"type": "image_url", "image_url": {
+                        # OpenAI's vision models support PDF data URLs for some models (e.g., gpt-4o)
+                        "url": f"data:application/pdf;base64,{base64_file}"
+                    }}
+                ]}
+            ],
+            response_format={"type": "json_object"}, # Instruct to return JSON
+            max_tokens=4000 # Increase max tokens to ensure full JSON can be returned
+        )
+
+        if response and response.choices and response.choices[0].message and response.choices[0].message.content:
+            json_string = response.choices[0].message.content
+            st.markdown("##### Raw JSON from OpenAI:")
+            st.code(json_string, language="json") # Show the raw JSON from OpenAI for debugging
+            try:
+                extracted_dict = json.loads(json_string)
+                # Validate with Pydantic model
+                extracted_invoice = pydantic_schema.parse_obj(extracted_dict)
+                st.success(f"OpenAI: Data extracted and validated for '{display_name}'.")
+                return extracted_invoice
+            except json.JSONDecodeError as e:
+                st.error(f"OpenAI: Failed to decode JSON from response for '{display_name}': {e}")
+                st.code(json_string, language="json") # Show malformed JSON
+                return None
+            except Exception as e:
+                st.error(f"OpenAI: Failed to parse extracted data into schema for '{display_name}': {e}")
+                st.code(json_string, language="json") # Show the JSON it tried to parse
+                return None
+        else:
+            st.warning(f"OpenAI: No content received or unexpected response structure for '{display_name}'.")
+            st.json(response.dict()) # Show the full response object
+            return None
+
+    except Exception as e:
+        st.error(f"Error processing '{display_name}' with OpenAI: {e}")
+        st.exception(e)
+        return None
+
+# --- Streamlit App UI ---
+st.set_page_config(layout="wide", page_title="📄 AI Invoice Extractor")
+
+# Custom CSS for a bit more flair
+st.markdown("""
+<style>
+    /* General app styling */
+    .stApp {
+        background-color: #f0f2f6; /* Light gray background */
+        color: #333333;
+    }
+    h1, h2, h3 {
+        color: #1e3a8a; /* Dark blue for headers */
+    }
+    .stButton>button {
+        background-color: #3b82f6; /* Blue button */
+        color: white;
+        border-radius: 8px;
+        padding: 10px 20px;
+        font-size: 16px;
+        font-weight: bold;
+        transition: background-color 0.3s ease;
+    }
+    .stButton>button:hover {
+        background-color: #2563eb; /* Darker blue on hover */
+    }
+    .stMarkdown p {
+        font-size: 1.05em;
+        line-height: 1.6;
+    }
+    /* Info/Success/Error boxes */
+    .stAlert {
+        border-radius: 8px;
+    }
+    .stAlert.info {
+        background-color: #e0f2f7; /* Light blue */
+        color: #0288d1;
+    }
+    .stAlert.success {
+        background-color: #e8f5e9; /* Light green */
+        color: #2e7d32;
+    }
+    .stAlert.error {
+        background-color: #ffebee; /* Light red */
+        color: #c62828;
+    }
+    .stProgress > div > div > div > div {
+        background-color: #3b82f6 !important; /* Blue progress bar */
+    }
+</style>
+""", unsafe_allow_html=True)
+
+
+st.title("📄 AI Invoice Extractor (Multi-Model Powered)")
+
+st.sidebar.header("Configuration")
+
+# Model Selection
+model_choice = st.sidebar.radio(
+    "Choose AI Model:",
+    ("Google Gemini", "OpenAI GPT"),
+    key="model_choice"
+)
+
+# API Key Inputs (Conditional)
+# Using st.empty() to control rendering ensures only one set of inputs is shown
+api_key_placeholder = st.sidebar.empty()
+model_id_placeholder = st.sidebar.empty()
+model_caption_placeholder = st.sidebar.empty()
+
+selected_api_key = None
+model_id_input = None
+
+if model_choice == "Google Gemini":
+    selected_api_key = api_key_placeholder.text_input("Enter your Gemini API Key:", type="password", key="gemini_key")
+    DEFAULT_GEMINI_MODEL_ID = "gemini-1.5-flash-latest"
+    model_id_input = model_id_placeholder.text_input("Gemini Model ID:", DEFAULT_GEMINI_MODEL_ID, key="gemini_model_id")
+    model_caption_placeholder.caption(f"Default is `{DEFAULT_GEMINI_MODEL_ID}`. Ensure it supports JSON schema.")
+elif model_choice == "OpenAI GPT":
+    selected_api_key = api_key_placeholder.text_input("Enter your OpenAI API Key:", type="password", key="openai_key")
+    DEFAULT_OPENAI_MODEL_ID = "gpt-4o" # GPT-4o is excellent for vision + JSON
+    model_id_input = model_id_placeholder.text_input("OpenAI Model ID:", DEFAULT_OPENAI_MODEL_ID, key="openai_model_id")
+    model_caption_placeholder.caption(f"Default is `{DEFAULT_OPENAI_MODEL_ID}`. Ensure it's a vision model and supports JSON output.")
+
+st.info(
+    "**Instructions:**\n"
+    f"1. Select your preferred AI model ({model_choice}) in the sidebar.\n"
+    "2. Enter the corresponding API Key and Model ID in the sidebar.\n"
+    "3. Upload one or more PDF invoice files.\n"
+    "4. Click 'Process Invoices' to extract data.\n"
+    "   The extracted data will be displayed in a table and available for download as Excel."
+)
+
+uploaded_files = st.file_uploader(
+    "Choose PDF invoice files",
+    type="pdf",
+    accept_multiple_files=True
+)
+
+# Initialize session state variables if they don't exist
+if 'summary_rows' not in st.session_state:
+    st.session_state.summary_rows = []
+if 'gemini_client' not in st.session_state:
+    st.session_state.gemini_client = None
+if 'openai_client' not in st.session_state:
+    st.session_state.openai_client = None
+
+
+if st.button("🚀 Process Invoices", type="primary"):
+    if not selected_api_key:
+        st.error(f"Please enter your {model_choice} API Key in the sidebar.")
+    elif not uploaded_files:
+        st.error("Please upload at least one PDF file.")
+    elif not model_id_input:
+        st.error(f"Please specify a {model_choice} Model ID in the sidebar.")
+    else:
+        # Initialize the correct client based on choice
+        client_initialized = False
+        if model_choice == "Google Gemini":
+            if 'genai' in globals(): # Check if genai was successfully imported
+                try:
+                    st.session_state.gemini_client = genai.Client(api_key=selected_api_key)
+                    st.success("Gemini client initialized successfully!")
+                    client_initialized = True
+                except Exception as e:
+                    st.error(f"Failed to initialize Gemini client: {e}. Please check your API key.")
+                    st.session_state.gemini_client = None
+            else:
+                st.error("Gemini library not found. Cannot initialize Gemini client.")
+
+        elif model_choice == "OpenAI GPT":
+            if 'OpenAI' in globals(): # Check if OpenAI was successfully imported
+                try:
+                    st.session_state.openai_client = OpenAI(api_key=selected_api_key)
+                    st.success("OpenAI client initialized successfully!")
+                    client_initialized = True
+                except Exception as e:
+                    st.error(f"Failed to initialize OpenAI client: {e}. Please check your API key.")
+                    st.session_state.openai_client = None
+            else:
+                st.error("OpenAI library not found. Cannot initialize OpenAI client.")
+        
+        if not client_initialized:
+            st.stop() # Stop execution if client failed to initialize or library missing
+
+        # Proceed only if the client was successfully initialized
+        if (model_choice == "Google Gemini" and st.session_state.gemini_client) or \
+           (model_choice == "OpenAI GPT" and st.session_state.openai_client):
+            
+            st.session_state.summary_rows = [] # Clear previous results
+            progress_bar = st.progress(0)
+            total_files = len(uploaded_files)
+
+            for i, uploaded_file_obj in enumerate(uploaded_files):
+                st.markdown(f"---") # Separator between files
+                st.info(f"Processing file: **{uploaded_file_obj.name}** ({i+1}/{total_files}) using **{model_choice}**...")
+                temp_file_path = None
+                extracted_data = None
+                try:
+                    # Save UploadedFile to a temporary file to get a file_path
+                    with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(uploaded_file_obj.name)[1]) as tmp:
+                        tmp.write(uploaded_file_obj.getvalue())
+                        temp_file_path = tmp.name
+
+                    with st.spinner(f"Extracting data from {uploaded_file_obj.name} with {model_choice}..."):
+                        if model_choice == "Google Gemini":
+                            extracted_data = extract_from_gemini(
+                                client_instance=st.session_state.gemini_client,
+                                gemini_model_id=model_id_input,
+                                file_path=temp_file_path,
+                                pydantic_schema=Invoice
+                            )
+                        elif model_choice == "OpenAI GPT":
+                            extracted_data = extract_from_openai(
+                                client_instance=st.session_state.openai_client,
+                                openai_model_id=model_id_input,
+                                file_path=temp_file_path,
+                                pydantic_schema=Invoice
+                            )
+                    
+                    if extracted_data:
+                        st.success(f"Successfully extracted data from **{uploaded_file_obj.name}** 🎉")
+
+                        # Apply formatting and handle None values for consistent display
+                        parsed_date = parse_date_safe(extracted_data.date)
+                        cgst = extracted_data.cgst if extracted_data.cgst is not None else 0.0
+                        sgst = extracted_data.sgst if extracted_data.sgst is not None else 0.0
+                        igst = extracted_data.igst if extracted_data.igst is not None else 0.0
+                        total_gross_worth = extracted_data.total_gross_worth if extracted_data.total_gross_worth is not None else 0.0
+                        pos = extracted_data.place_of_supply or "N/A"
+                        seller_name_display = extracted_data.seller_name or "N/A"
+                        seller_gstin_display = extracted_data.gstin or "N/A"
+                        buyer_name_display = extracted_data.buyer_name or "N/A"
+                        buyer_gstin_display = extracted_data.buyer_gstin or "N/A"
+                        expense_ledger_display = extracted_data.expense_ledger or "N/A"
+                        tds_display = extracted_data.tds or "N/A"
+                        rcm_display = extracted_data.rcm_applicability or "N/A"
+
+                        narration = (
+                            f"Invoice **{extracted_data.invoice_number or 'N/A'}** dated **{parsed_date}** "
+                            f"from **{seller_name_display}** (GSTIN: {seller_gstin_display}) "
+                            f"to **{buyer_name_display}** (Buyer GSTIN: {buyer_gstin_display}), "
+                            f"totaling **{format_currency(total_gross_worth)}**. "
+                            f"Taxes: CGST {format_currency(cgst)}, SGST {format_currency(sgst)}, IGST {format_currency(igst)}. "
+                            f"Place of Supply: {pos}. Expense Ledger: {expense_ledger_display}. "
+                            f"TDS: {tds_display}. RCM: {rcm_display}."
+                        )
+
+                        # Store data for summary table
+                        st.session_state.summary_rows.append({
+                            "File Name": uploaded_file_obj.name,
+                            "Invoice Number": extracted_data.invoice_number,
+                            "Date": parsed_date,
+                            "Seller Name": seller_name_display,
+                            "Seller GSTIN": seller_gstin_display,
+                            "Buyer Name": buyer_name_display,
+                            "Buyer GSTIN": buyer_gstin_display,
+                            "Total Gross Worth": total_gross_worth, # Keep raw for Excel
+                            "CGST": cgst,
+                            "SGST": sgst,
+                            "IGST": igst,
+                            "Place of Supply": pos,
+                            "Expense Ledger": expense_ledger_display,
+                            "TDS": tds_display,
+                            "RCM Applicability": rcm_display,
+                            "Narration": narration,
+                        })
+
+                        # Display detailed extraction for the current file using an expander
+                        with st.expander(f"📋 Details for {uploaded_file_obj.name} (using {model_choice})"):
+                            # This will show the Pydantic object's dictionary representation
+                            st.subheader("Raw Extracted Data (JSON):")
+                            st.json(extracted_data.dict())
+                            st.subheader("Extracted Summary (Narration):")
+                            st.markdown(narration)
+
+                            if extracted_data.line_items:
+                                st.subheader("Line Items:")
+                                line_item_data = [{
+                                    "Description": item.description,
+                                    "Quantity": item.quantity,
+                                    "Gross Worth": format_currency(item.gross_worth), # Format for display
+                                    "HSN/SAC": item.hsn_sac or "N/A"
+                                } for item in extracted_data.line_items]
+                                st.dataframe(pd.DataFrame(line_item_data), use_container_width=True)
+                            else:
+                                st.info("No line items extracted.")
+
+                    else:
+                        st.warning(f"Failed to extract data or no valid data returned for **{uploaded_file_obj.name}** using {model_choice}. Check error messages above.")
+
+                except Exception as e_outer:
+                    st.error(f"An unexpected error occurred while processing **{uploaded_file_obj.name}**: {e_outer}")
+                    st.exception(e_outer)
+                finally:
+                    # Clean up: Delete the temporary local file
+                    if temp_file_path and os.path.exists(temp_file_path):
+                        os.unlink(temp_file_path)
+                        # st.write(f"Cleaned up temporary local file: `{temp_file_path}`") # Can be noisy, uncomment for debug
+                progress_bar.progress((i + 1) / total_files)
+
+            st.markdown(f"---")
+            if st.session_state.summary_rows:
+                st.balloons() # Celebrate successful batch processing!
+                st.success("All selected invoices processed!")
+
+
+if st.session_state.summary_rows:
+    st.subheader("📊 Consolidated Extracted Invoice Summary")
+    df = pd.DataFrame(st.session_state.summary_rows)
+
+    # Make a copy for display to apply string formatting without affecting raw numbers for Excel
+    df_display = df.copy()
+    for col in ["Total Gross Worth", "CGST", "SGST", "IGST"]:
+        df_display[col] = df_display[col].apply(format_currency)
+
+    st.dataframe(df_display, use_container_width=True)
+
+    # Provide download link for Excel
+    output_excel = io.BytesIO()
+    # Use the original df which has numerical values for excel export
+    with pd.ExcelWriter(output_excel, engine='openpyxl') as writer:
+        df.to_excel(writer, index=False, sheet_name='InvoiceSummary')
+    excel_data = output_excel.getvalue()
+
+    st.download_button(
+        label="📥 Download Consolidated Summary as Excel",
+        data=excel_data,
+        file_name="invoice_summary.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
+elif not uploaded_files:
+     st.info("Upload PDF files and click 'Process Invoices' to see results.")
