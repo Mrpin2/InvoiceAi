@@ -56,7 +56,7 @@ if "summary_rows" not in st.session_state:
 
 st.sidebar.header("🔐 AI Config")
 passcode = st.sidebar.text_input("Admin Passcode", type="password")
-admin_unlocked = passcode == "Essenbee"
+admin_unlocked = passcode == "Rajeev"
 
 openai_api_key = None
 if admin_unlocked:
