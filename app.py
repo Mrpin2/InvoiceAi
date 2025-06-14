@@ -16,6 +16,7 @@ import locale
 import re
 from dateutil import parser
 import json
+from contextlib import redirect_stdout # Added for debugging info
 
 locale.setlocale(locale.LC_ALL, '')
 
@@ -105,6 +106,8 @@ def format_currency(x):
     except:
         return "₹0.00"
 
+# Note: is_valid_gstin and extract_gstin_from_text functions are kept
+# as they might still be useful, but the main logic will prioritize raw_data.get().
 def is_valid_gstin(gstin):
     """Validates an Indian GSTIN format."""
     if not gstin:
@@ -340,18 +343,14 @@ if uploaded_files:
                     date = raw_data.get("date", "")
                     seller_name = raw_data.get("seller_name", "")
 
-                    # Refined GSTIN extraction for Seller
-                    seller_gstin = raw_data.get("gstin", "") # Try direct GPT output first
-                    if not is_valid_gstin(seller_gstin): # If not valid, try extracting from combined text
-                        seller_gstin = extract_gstin_from_text(str(raw_data.get("gstin", "")) + " " + str(seller_name))
+                    # Reverted GSTIN extraction for Seller: Directly use raw_data.get()
+                    seller_gstin = raw_data.get("gstin", "")
                     
                     hsn_sac = raw_data.get("hsn_sac", "")
                     buyer_name = raw_data.get("buyer_name", "")
 
-                    # Refined GSTIN extraction for Buyer
-                    buyer_gstin = raw_data.get("buyer_gstin", "") # Try direct GPT output first
-                    if not is_valid_gstin(buyer_gstin): # If not valid, try extracting from combined text
-                        buyer_gstin = extract_gstin_from_text(str(raw_data.get("buyer_gstin", "")) + " " + str(buyer_name))
+                    # Reverted GSTIN extraction for Buyer: Directly use raw_data.get()
+                    buyer_gstin = raw_data.get("buyer_gstin", "")
                     
                     expense_ledger = raw_data.get("expense_ledger", "")
                     taxable_amount = safe_float(raw_data.get("taxable_amount", 0.0))
@@ -575,10 +574,6 @@ if results:
         if 'TDS Rate (%)' in download_df.columns:
             download_df = download_df.drop(columns=['TDS Rate (%)'])
 
-        # Ensure the download_df has consistent column names as the original fields for ease of use
-        # This part might need manual mapping if original_col names are completely different from JSON keys
-        # For this script, the original_col names are the same as keys, so it's simpler.
-        
         # Filter download_df to include only relevant (unformatted) columns
         download_cols_ordered = [col for col in display_cols if col not in currency_cols_mapping.values() and col != 'TDS Rate (%)']
         
@@ -614,6 +609,7 @@ if results:
     st.markdown("### Debugging Information:")
     st.write("#### DataFrame Info (from the display DataFrame):")
     buffer = io.StringIO()
+    # Ensure redirect_stdout is properly imported and used within a context
     with redirect_stdout(buffer):
         df.info(verbose=True, show_counts=True)
     st.text(buffer.getvalue())
