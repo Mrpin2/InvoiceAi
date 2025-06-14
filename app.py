@@ -340,11 +340,12 @@ st.markdown("""
     .stButton>button:hover { 
         background-color: #2563eb; 
     }
+    /* General Markdown paragraph styling */
     .stMarkdown p { 
         font-size: 1.05em; 
         line-height: 1.6; 
         font-family: 'Roboto', 'Helvetica Neue', Arial, sans-serif; 
-        color: #333333; /* Ensure text in markdown is dark enough */
+        color: #333333; /* Default dark color for general markdown text */
     }
     .stAlert { 
         border-radius: 8px; 
@@ -352,8 +353,7 @@ st.markdown("""
     }
     .stAlert.info { 
         background-color: #e0f2f7; 
-        color: #0288d1; /* This is the main color of the info text itself */
-        font-weight: normal; /* Ensure it's not too light */
+        /* The main color of the info text is now handled by the specific targets below */
     }
     .stAlert.success { 
         background-color: #e8f5e9; 
@@ -366,10 +366,15 @@ st.markdown("""
     .stProgress > div > div > div > div { 
         background-color: #3b82f6 !important; 
     }
-    /* Specific styling for the list items inside st.info, if they are rendered as p or li */
-    .stAlert.info p, .stAlert.info li {
-        color: #333333; /* Darker color for instruction text inside info box */
-        font-weight: 500; /* A bit bolder for readability */
+    
+    /* *** CRITICAL FIX for instruction text visibility *** */
+    /* Target paragraphs and list items directly inside the st.info alert */
+    .stAlert.info p, 
+    .stAlert.info li,
+    .stAlert.info div { /* Also target generic div in case the list items are wrapped */
+        color: #1a1a1a !important; /* Very dark grey for strong contrast */
+        font-weight: 500 !important; /* Make it a bit bolder */
+        text-shadow: none !important; /* Remove any potential text shadow */
     }
 </style>
 """, unsafe_allow_html=True)
@@ -457,7 +462,7 @@ else: # Default behavior: user must enter keys manually
 st.info(
     "**Instructions:**\n"
     f"1. Select your preferred AI model ({model_choice}) in the sidebar.\n"
-    "   💡 **Recommendation:** Use **Google Gemini** for **scanned or blurred documents**, and **OpenAI GPT** for **system-generated (clear) PDF invoices**.\n" # Updated recommendation
+    "   💡 **Recommendation:** Use **Google Gemini** for **scanned or blurred documents**, and **OpenAI GPT** for **system-generated (clear) PDF invoices**.\n"
     "2. If you know the admin password, enter it to use pre-configured API keys from `Streamlit Secrets`.\n"
     "3. Upload one or more PDF invoice files.\n"
     "4. Click 'Process Invoices' to extract data.\n"
@@ -718,7 +723,7 @@ if st.session_state.summary_rows:
         "IGST",
         "TDS Rate",
         "TDS Amount",
-        "TDS Section", # Renamed in display
+        "TDS Section",
         "Narration",
     ]
 
@@ -748,10 +753,10 @@ if st.session_state.summary_rows:
             "IGST",
             "TDS Rate",
             "TDS Amount",
-            "TDS Section", # Renamed in Excel
+            "TDS Section",
             "Narration",
-            "Gross Total (Incl Tax)", # Keeping this for Excel as it's a useful derived value
-            "R. Applicability", # Keeping this for Excel
+            "Gross Total (Incl Tax)",
+            "R. Applicability",
         ]
         
         # Filter and reorder for Excel export, ensuring columns exist
