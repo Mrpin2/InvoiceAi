@@ -1,17 +1,12 @@
 import streamlit as st
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 from typing import List, Optional
 import pandas as pd
 import os
 import tempfile
 import io
-
-# Try to import google.generativeai, show error if not found
-try:
-    from google import genai
-except ImportError:
-    st.error("The 'google-generativeai' library is not installed. Please install it by running: pip install google-generativeai")
-    st.stop()
+import openai
+from datetime import datetime
 
 # --- Pydantic Models ---
 class LineItem(BaseModel):
@@ -35,72 +30,25 @@ class Invoice(BaseModel):
     expense_ledger: Optional[str] = None
     tds: Optional[str] = None
 
-# --- Gemini API Interaction ---
-def extract_structured_data(client_instance, gemini_model_id: str, file_path: str, pydantic_schema: BaseModel):
-    display_name = os.path.basename(file_path)
-    gemini_file_resource = None
-    try:
-        st.write(f"Uploading '{display_name}' to Gemini File API...")
-        gemini_file_resource = client_instance.files.upload(
-            file=file_path,
-            config={'display_name': display_name.split('.')[0]}
-        )
-        st.write(f"'{display_name}' uploaded. Gemini file name: {gemini_file_resource.name}")
-
-        prompt = (
-            "Extract all relevant and clear information from the invoice, adhering to Indian standards "
-            "for dates (DD/MM/YYYY or DD-MM-YYYY) and codes (like GSTIN, HSN/SAC). "
-            "Accurately identify the total amount payable. Classify the nature of expense and suggest an "
-            "applicable ledger type (e.g., 'Office Supplies', 'Professional Fees', 'Software Subscription'). "
-            "Determine TDS applicability (e.g., 'Yes - Section 194J', 'No', 'Uncertain'). "
-            "Determine reverse charge GST (RCM) applicability (e.g., 'Yes', 'No', 'Uncertain'). "
-            "Handle missing data appropriately by setting fields to null or an empty string where "
-            "Optional, and raise an issue if critical data is missing for required fields. "
-            "Do not make assumptions or perform calculations beyond what's explicitly stated in the invoice text. "
-            "If a value is clearly zero, represent it as 0.0 for floats. For dates, prefer DD/MM/YYYY."
-        )
-        st.write(f"Sending '{display_name}' to Gemini model '{gemini_model_id}' for extraction...")
-        response = client_instance.models.generate_content(
-            model=gemini_model_id,
-            contents=[prompt, gemini_file_resource],
-            config={'response_mime_type': 'application/json', 'response_schema': pydantic_schema}
-        )
-
-        st.write(f"Data extracted for '{display_name}'.")
-        return response.parsed
-
-    except Exception as e:
-        st.error(f"Error processing '{display_name}' with Gemini: {e}")
-        import traceback
-        st.error(traceback.format_exc())
-        return None
-    finally:
-        if gemini_file_resource and hasattr(client_instance, 'files') and hasattr(client_instance.files, 'delete'):
-            try:
-                st.write(f"Attempting to delete '{gemini_file_resource.name}' from Gemini File API...")
-                client_instance.files.delete(name=gemini_file_resource.name)
-                st.write(f"Successfully deleted '{gemini_file_resource.name}' from Gemini.")
-            except Exception as e_del:
-                st.warning(f"Could not delete '{gemini_file_resource.name}' from Gemini File API: {e_del}")
-        elif gemini_file_resource:
-            st.warning(f"Could not determine how to delete Gemini file '{gemini_file_resource.name}'. Manual cleanup may be required in your Gemini project console.")
-
-# --- Streamlit App UI ---
+# --- Streamlit Setup ---
 st.set_page_config(layout="wide")
-st.title("\U0001F4C4 PDF Invoice Extractor (Gemini AI)")
+st.title("📄 PDF Invoice Extractor (ChatGPT)")
 
 st.sidebar.header("Configuration")
-api_key_input = st.sidebar.text_input("Enter your Gemini API Key:", type="password")
-DEFAULT_GEMINI_MODEL_ID = "gemini-1.5-flash-latest"
-gemini_model_id_input = st.sidebar.text_input("Gemini Model ID for Extraction:", DEFAULT_GEMINI_MODEL_ID)
-st.sidebar.caption(f"Default is `{DEFAULT_GEMINI_MODEL_ID}`. Your script used 'gemini-2.0-flash'. Ensure the model ID is correct and supports schema-based JSON output.")
+password = st.sidebar.text_input("Enter password to unlock ChatGPT API Key:", type="password")
+
+if password != "essenbee":
+    st.warning("Please enter the correct password to continue.")
+    st.stop()
+
+api_key_input = st.sidebar.text_input("Enter your OpenAI API Key:", type="password")
+model_id = st.sidebar.text_input("ChatGPT Model ID:", "gpt-4-turbo")
 
 st.info(
     "**Instructions:**\n"
-    "1. Enter your Gemini API Key in the sidebar.\n"
-    "2. Optionally, change the Gemini Model ID if needed.\n"
-    "3. Upload one or more PDF invoice files.\n"
-    "4. Click 'Process Invoices' to extract data.\n"
+    "1. Enter your OpenAI API Key in the sidebar.\n"
+    "2. Upload one or more PDF invoice files.\n"
+    "3. Click 'Process Invoices' to extract data.\n"
     "   The extracted data will be displayed in a table and available for download as Excel."
 )
 
@@ -112,104 +60,137 @@ uploaded_files = st.file_uploader(
 
 if 'summary_rows' not in st.session_state:
     st.session_state.summary_rows = []
-if 'client' not in st.session_state:
-    st.session_state.client = None
 if 'processing_status' not in st.session_state:
     st.session_state.processing_status = {}
 
-if st.button("\U0001F680 Process Invoices", type="primary"):
+# --- Function: Extract data using ChatGPT ---
+def extract_with_chatgpt(api_key: str, model: str, file_bytes: bytes, file_name: str) -> Optional[Invoice]:
+    try:
+        content = file_bytes.decode('latin1', errors='ignore')
+
+        prompt = (
+            f"""
+You are a strict invoice parser. Extract structured data from the below invoice text.
+Return data as JSON matching this structure:
+
+Invoice(BaseModel):
+- invoice_number: str
+- date: str (format: DD/MM/YYYY or DD-MM-YYYY)
+- gstin: str (seller GSTIN)
+- seller_name: str
+- buyer_name: str
+- buyer_gstin: str | null
+- line_items: List of objects with: description, quantity (float), gross_worth (float)
+- total_gross_worth: float
+- cgst: float | null
+- sgst: float | null
+- igst: float | null
+- place_of_supply: str | null
+- expense_ledger: str | null
+- tds: str | null
+
+Only use fields clearly visible in the invoice. If unknown, set to null or empty string. Do NOT guess or hallucinate.
+PDF Content:\n""" + content[:12000] + "\n--- END OF FILE ---"
+        )
+
+        openai.api_key = api_key
+        response = openai.ChatCompletion.create(
+            model=model,
+            messages=[
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0.0,
+            response_format="json"
+        )
+
+        parsed = response.choices[0].message.content
+        return Invoice.model_validate_json(parsed)
+
+    except Exception as e:
+        st.error(f"Failed to extract data from {file_name}: {e}")
+        return None
+
+# --- Main Processing Button ---
+if st.button("🚀 Process Invoices", type="primary"):
     if not api_key_input:
-        st.error("Please enter your Gemini API Key in the sidebar.")
+        st.error("Please enter your OpenAI API Key.")
     elif not uploaded_files:
         st.error("Please upload at least one PDF file.")
-    elif not gemini_model_id_input:
-        st.error("Please specify a Gemini Model ID in the sidebar.")
     else:
-        try:
-            st.session_state.client = genai.Client(api_key=api_key_input)
-            st.success("Gemini client initialized successfully with the provided API Key.")
-        except Exception as e:
-            st.error(f"Failed to initialize Gemini client: {e}")
-            st.session_state.client = None
+        st.session_state.summary_rows = []
+        progress_bar = st.progress(0)
+        total_files = len(uploaded_files)
 
-        if st.session_state.client:
-            st.session_state.summary_rows = []
-            progress_bar = st.progress(0)
-            total_files = len(uploaded_files)
+        for i, uploaded_file in enumerate(uploaded_files):
+            file_name = uploaded_file.name
+            st.session_state.processing_status[file_name] = "⏳ Pending..."
+            st.markdown("---")
+            st.info(f"Processing file: {file_name} ({i+1}/{total_files})")
 
-            for i, uploaded_file_obj in enumerate(uploaded_files):
-                st.markdown(f"---")
-                st.info(f"Processing file: {uploaded_file_obj.name} ({i+1}/{total_files})")
-                temp_file_path = None
+            temp_path = None
+            try:
+                with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
+                    tmp.write(uploaded_file.getvalue())
+                    temp_path = tmp.name
 
-                st.session_state.processing_status[uploaded_file_obj.name] = "⏳ Pending..."
-                try:
-                    with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(uploaded_file_obj.name)[1]) as tmp:
-                        tmp.write(uploaded_file_obj.getvalue())
-                        temp_file_path = tmp.name
+                with open(temp_path, "rb") as f:
+                    file_bytes = f.read()
 
-                    with st.spinner(f"Extracting data from {uploaded_file_obj.name}..."):
-                        extracted_data = extract_structured_data(
-                            client_instance=st.session_state.client,
-                            gemini_model_id=gemini_model_id_input,
-                            file_path=temp_file_path,
-                            pydantic_schema=Invoice
-                        )
+                with st.spinner(f"Extracting data from {file_name}..."):
+                    extracted = extract_with_chatgpt(api_key_input, model_id, file_bytes, file_name)
 
-                    if extracted_data:
-                        st.success(f"Successfully extracted data from {uploaded_file_obj.name}")
-                        cgst = extracted_data.cgst if extracted_data.cgst is not None else 0.0
-                        sgst = extracted_data.sgst if extracted_data.sgst is not None else 0.0
-                        igst = extracted_data.igst if extracted_data.igst is not None else 0.0
-                        pos = extracted_data.place_of_supply if extracted_data.place_of_supply else "N/A"
-                        buyer_gstin_display = extracted_data.buyer_gstin or "N/A"
+                if extracted:
+                    st.success(f"✅ Extracted data from {file_name}")
+                    cgst = extracted.cgst or 0.0
+                    sgst = extracted.sgst or 0.0
+                    igst = extracted.igst or 0.0
+                    pos = extracted.place_of_supply or "N/A"
+                    buyer_gstin = extracted.buyer_gstin or "N/A"
 
-                        narration = (
-                            f"Invoice {extracted_data.invoice_number} dated {extracted_data.date} "
-                            f"was issued by {extracted_data.seller_name} (GSTIN: {extracted_data.gstin}) "
-                            f"to {extracted_data.buyer_name} (GSTIN: {buyer_gstin_display}), "
-                            f"with a total value of ₹{extracted_data.total_gross_worth:.2f}. "
-                            f"Taxes applied - CGST: ₹{cgst:.2f}, SGST: ₹{sgst:.2f}, IGST: ₹{igst:.2f}. "
-                            f"Place of supply: {pos}. Expense: {extracted_data.expense_ledger or 'N/A'}. "
-                            f"TDS: {extracted_data.tds or 'N/A'}."
-                        )
-                        st.session_state.summary_rows.append({
-                            "File Name": uploaded_file_obj.name,
-                            "Invoice Number": extracted_data.invoice_number,
-                            "Date": extracted_data.date,
-                            "Seller Name": extracted_data.seller_name,
-                            "Seller GSTIN": extracted_data.gstin,
-                            "Buyer Name": extracted_data.buyer_name,
-                            "Buyer GSTIN": buyer_gstin_display,
-                            "Total Gross Worth": extracted_data.total_gross_worth,
-                            "CGST": cgst,
-                            "SGST": sgst,
-                            "IGST": igst,
-                            "Place of Supply": pos,
-                            "Expense Ledger": extracted_data.expense_ledger,
-                            "TDS": extracted_data.tds,
-                            "Narration": narration,
-                        })
-                        st.session_state.processing_status[uploaded_file_obj.name] = "✅ Done"
-                    else:
-                        st.warning(f"Failed to extract data or no data returned for {uploaded_file_obj.name}")
-                        st.session_state.processing_status[uploaded_file_obj.name] = "⚠️ Failed"
+                    narration = (
+                        f"Invoice {extracted.invoice_number} dated {extracted.date} was issued by "
+                        f"{extracted.seller_name} (GSTIN: {extracted.gstin}) to {extracted.buyer_name} "
+                        f"(GSTIN: {buyer_gstin}), total ₹{extracted.total_gross_worth:.2f}. Taxes - "
+                        f"CGST: ₹{cgst:.2f}, SGST: ₹{sgst:.2f}, IGST: ₹{igst:.2f}. Place of supply: {pos}. "
+                        f"Expense: {extracted.expense_ledger or 'N/A'}. TDS: {extracted.tds or 'N/A'}."
+                    )
 
-                except Exception as e_outer:
-                    st.error(f"An unexpected error occurred while processing {uploaded_file_obj.name}: {e_outer}")
-                    st.session_state.processing_status[uploaded_file_obj.name] = "❌ Error"
-                finally:
-                    if temp_file_path and os.path.exists(temp_file_path):
-                        os.unlink(temp_file_path)
-                        st.write(f"Deleted temporary local file: {temp_file_path}")
+                    st.session_state.summary_rows.append({
+                        "File Name": file_name,
+                        "Invoice Number": extracted.invoice_number,
+                        "Date": extracted.date,
+                        "Seller Name": extracted.seller_name,
+                        "Seller GSTIN": extracted.gstin,
+                        "Buyer Name": extracted.buyer_name,
+                        "Buyer GSTIN": buyer_gstin,
+                        "Total Gross Worth": extracted.total_gross_worth,
+                        "CGST": cgst,
+                        "SGST": sgst,
+                        "IGST": igst,
+                        "Place of Supply": pos,
+                        "Expense Ledger": extracted.expense_ledger,
+                        "TDS": extracted.tds,
+                        "Narration": narration,
+                    })
+                    st.session_state.processing_status[file_name] = "✅ Success"
+                else:
+                    st.warning(f"No data returned for {file_name}")
+                    st.session_state.processing_status[file_name] = "⚠️ No Data"
+
+            except Exception as e:
+                st.error(f"Unexpected error while processing {file_name}: {e}")
+                st.session_state.processing_status[file_name] = "❌ Failed"
+            finally:
+                if temp_path and os.path.exists(temp_path):
+                    os.unlink(temp_path)
+                    st.write(f"Deleted temporary file: {temp_path}")
                 progress_bar.progress((i + 1) / total_files)
 
-            st.markdown(f"---")
-            if st.session_state.summary_rows:
-                st.balloons()
+        st.balloons()
 
+# --- Display Summary Table ---
 if st.session_state.summary_rows:
-    st.subheader("\U0001F4CA Extracted Invoice Summary")
+    st.subheader("📊 Extracted Invoice Summary")
     df = pd.DataFrame(st.session_state.summary_rows)
     st.dataframe(df)
 
@@ -219,7 +200,7 @@ if st.session_state.summary_rows:
     excel_data = output_excel.getvalue()
 
     st.download_button(
-        label="\U0001F4E5 Download Summary as Excel",
+        label="📥 Download Summary as Excel",
         data=excel_data,
         file_name="invoice_summary.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
