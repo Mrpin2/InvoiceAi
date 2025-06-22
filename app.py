@@ -400,10 +400,10 @@ st.markdown("""
 
     body {
         font-family: 'Roboto', sans-serif;
+        color: #333333; /* Default text color */
     }
     .stApp { 
         background-color: #f0f2f6; /* Light gray background */
-        color: #333333; 
         font-family: 'Roboto', sans-serif; 
     }
     h1, h2, h3, h4, h5, h6 { 
@@ -429,7 +429,7 @@ st.markdown("""
         box-shadow: 0 6px 12px rgba(0, 0, 0, 0.15);
     }
     /* Style for 'Remove' buttons in field list */
-    .stButton>button[kind="secondaryFormSubmit"] {
+    .stButton[data-testid="stFormSubmitButton"] button { /* Target specific submit buttons within forms */
         background-color: #ef5350; /* Red for remove */
         color: white;
         border-radius: 8px;
@@ -440,12 +440,15 @@ st.markdown("""
         box-shadow: none;
         transition: background-color 0.3s ease;
     }
-    .stButton>button[kind="secondaryFormSubmit"]:hover {
+    .stButton[data-testid="stFormSubmitButton"] button:hover {
         background-color: #d32f2f; /* Darker red on hover */
         transform: none;
         box-shadow: none;
     }
-
+    /* Ensure checkbox labels are visible */
+    .stCheckbox span {
+        color: #333333; /* Explicitly set color for checkbox labels */
+    }
     .stMarkdown p { 
         font-size: 1.05em; 
         line-height: 1.6; 
@@ -527,30 +530,19 @@ st.markdown("""
         box-shadow: 0 2px 5px rgba(0,0,0,0.05); /* Lighter shadow */
         border: 1px solid #eee;
     }
-    /* Custom field tag styling */
-    .field-tag {
-        display: inline-flex;
+    /* Styling for individual selected field rows */
+    .selected-field-row {
+        display: flex;
+        justify-content: space-between;
         align-items: center;
-        background-color: #e3f2fd; /* Light blue tag background */
-        color: #1976d2; /* Dark blue text */
-        border-radius: 20px;
-        padding: 5px 12px;
-        margin: 5px 5px;
-        font-size: 0.9em;
-        font-weight: 500;
-        border: 1px solid #90caf9;
+        padding: 8px 12px;
+        margin-bottom: 5px;
+        background-color: #e9eff7; /* Light blueish background */
+        border-radius: 8px;
+        border: 1px solid #d3e0f0;
     }
-    .field-tag .remove-button {
-        background: none;
-        border: none;
-        color: #1976d2;
-        font-size: 1.1em;
-        margin-left: 8px;
-        cursor: pointer;
-        transition: color 0.2s;
-    }
-    .field-tag .remove-button:hover {
-        color: #d32f2f; /* Red on hover */
+    .selected-field-row strong {
+        color: #1a237e; /* Dark blue for field names */
     }
 </style>
 """, unsafe_allow_html=True)
@@ -698,25 +690,25 @@ if extraction_type == "Structured Data Extraction":
         # Display common fields in columns
         num_cols_common = 4
         cols = st.columns(num_cols_common)
+        
+        # Track which common fields are currently checked/unchecked
+        common_fields_state = {field: False for field in COMMON_FIELD_NAMES}
+        for field in COMMON_FIELD_NAMES:
+            if field in st.session_state.custom_extracted_fields:
+                common_fields_state[field] = True
+
+        rerun_needed_for_checkbox = False
         for i, field in enumerate(COMMON_FIELD_NAMES):
             with cols[i % num_cols_common]:
-                # Use a callback to add/remove fields immediately
-                if st.checkbox(field, key=f"common_field_checkbox_{field}"):
-                    if field not in st.session_state.custom_extracted_fields:
-                        st.session_state.custom_extracted_fields.append(field)
-                        st.rerun() # Rerun to update the list immediately after checking
-        
-        # This part handles removing fields if the checkbox is unchecked
-        # (needs to be separate from the add logic to avoid race conditions with rerun)
-        fields_to_remove_from_common_unchecked = []
-        for field in st.session_state.custom_extracted_fields:
-            if field in COMMON_FIELD_NAMES and not st.session_state.get(f"common_field_checkbox_{field}", False):
-                 fields_to_remove_from_common_unchecked.append(field)
-        
-        if fields_to_remove_from_common_unchecked:
-            for field in fields_to_remove_from_common_unchecked:
-                if field in st.session_state.custom_extracted_fields:
+                current_checked_state = st.checkbox(field, value=common_fields_state[field], key=f"common_field_checkbox_{field}")
+                if current_checked_state and field not in st.session_state.custom_extracted_fields:
+                    st.session_state.custom_extracted_fields.append(field)
+                    rerun_needed_for_checkbox = True
+                elif not current_checked_state and field in st.session_state.custom_extracted_fields:
                     st.session_state.custom_extracted_fields.remove(field)
+                    rerun_needed_for_checkbox = True
+        
+        if rerun_needed_for_checkbox:
             st.rerun()
 
 
@@ -724,42 +716,16 @@ if extraction_type == "Structured Data Extraction":
         st.subheader("📋 Your Selected Fields:")
         if st.session_state.custom_extracted_fields:
             # Display selected fields with remove buttons
-            cols_per_row = 3
-            current_cols = st.columns(cols_per_row)
-            col_idx = 0
-            
-            # Temporary list to hold fields that are NOT removed in this run
-            fields_after_removal_attempt = [] 
-            
-            for field in st.session_state.custom_extracted_fields:
-                with current_cols[col_idx]:
-                    # Using a form for each button to isolate the button click
-                    with st.form(key=f"remove_form_{field}", clear_on_submit=False):
-                        tag_html = f"""
-                        <div class='field-tag'>
-                            <span>{field}</span>
-                            <button type="submit" class='remove-button' name="remove_button_{field}">&times;</button>
-                        </div>
-                        """
-                        st.markdown(tag_html, unsafe_allow_html=True)
-                        submitted = st.form_submit_button(label="Invisible Submit", help="Click to remove this field", key=f"submit_remove_{field}") # Hidden submit button
-
-                        if submitted:
-                            # This field was requested to be removed, so don't add it to fields_after_removal_attempt
+            with st.container(): # Use a container for the list of fields
+                for i, field in enumerate(st.session_state.custom_extracted_fields):
+                    col_name, col_remove = st.columns([0.8, 0.2])
+                    with col_name:
+                        st.markdown(f"<div class='selected-field-row'><strong>{field}</strong></div>", unsafe_allow_html=True)
+                    with col_remove:
+                        if st.button("x", key=f"remove_field_btn_{field}_{i}", help=f"Remove '{field}'", type="secondary"):
+                            st.session_state.custom_extracted_fields.remove(field)
                             st.toast(f"Removed '{field}'.")
-                            st.rerun() # Rerun to update the display
-                        else:
-                            # If the form was not submitted for this field, keep it
-                            fields_after_removal_attempt.append(field)
-
-                col_idx = (col_idx + 1) % cols_per_row
-            
-            # Update the session state list only after iterating through all fields
-            # This logic avoids issues if multiple items are removed in one go (though st.rerun handles most cases)
-            st.session_state.custom_extracted_fields = fields_after_removal_attempt
-
-            if not st.session_state.custom_extracted_fields:
-                st.info("No fields selected yet. Add some above!")
+                            st.rerun()
             
             selected_fields_for_extraction = st.session_state.custom_extracted_fields
         else:
@@ -1075,7 +1041,8 @@ if st.session_state.extracted_results:
                 # We need to map back to original field names to check types if it's a "common field"
                 is_common_field_numeric = False
                 for display_name, metadata in FIELD_METADATA.items():
-                    if metadata["field_name"] == col_key or display_name == col_key: # Check both internal and display names
+                    # Check if the display name (key in FIELD_METADATA) or its internal field_name matches col_key
+                    if metadata["field_name"] == col_key or display_name == col_key:
                         if metadata["field_name"] in ["taxable_amount", "cgst", "sgst", "igst", "tds_amount", "total_amount_payable"]:
                             is_common_field_numeric = True
                             break
@@ -1100,32 +1067,37 @@ if st.session_state.extracted_results:
             for result in structured_results:
                 row = {"File Name": result["file_name"]}
                 # For Excel, we take all raw extracted data, not just formatted display ones
-                for k, v in result["raw_extracted_dict"].items():
-                    # Map internal field names back to their display names for Excel headers
-                    display_name_found = next((d_name for d_name, meta in FIELD_METADATA.items() if meta["field_name"] == k), k)
-                    row[display_name_found] = v
-                # Also add the derived TDS Section explicitly for Excel
+                # We use raw_extracted_dict because it contains the keys exactly as returned by LLM,
+                # which could include custom fields not in FIELD_METADATA.
+                raw_data_from_llm = result.get("raw_extracted_dict", {})
+                
+                for k, v in raw_data_from_llm.items():
+                    # Attempt to map internal field names to user-friendly display names for Excel headers
+                    # If not found in FIELD_METADATA, use the raw key as the column name
+                    display_name_for_excel = next((d_name for d_name, meta in FIELD_METADATA.items() if meta["field_name"] == k), k)
+                    row[display_name_for_excel] = v
+                
+                # Also add the derived TDS Section explicitly for Excel if it was present
                 if "TDS Section (Derived)" in result["extracted_data"]:
                     row["TDS Section (Derived)"] = result["extracted_data"]["TDS Section (Derived)"]
+                
                 excel_data_rows.append(row)
             
             df_for_excel = pd.DataFrame(excel_data_rows)
 
             # Drop 'Line Items' column from the main sheet if it exists
+            # This handles both standard 'Line Items' and potential 'line_items' as raw key
             if "Line Items" in df_for_excel.columns:
                 df_for_excel = df_for_excel.drop(columns=["Line Items"])
+            if "line_items" in df_for_excel.columns: # Check for internal name too
+                 df_for_excel = df_for_excel.drop(columns=["line_items"])
 
             # Sort Excel columns for consistency
-            all_excel_cols = ["File Name"] + sorted([col for col in df_for_excel.columns if col not in ["File Name", "line_items"]])
-            if "Line Items" in FIELD_METADATA or (custom_prompt_input and "line_items" in df_for_excel.columns):
-                # We need to remove line_items if it's treated as a column in the main DF for Excel export
-                # but it's handled in a separate sheet.
-                if "line_items" in all_excel_cols:
-                    all_excel_cols.remove("line_items")
-                if FIELD_METADATA["Line Items"]["field_name"] in all_excel_cols:
-                    all_excel_cols.remove(FIELD_METADATA["Line Items"]["field_name"])
+            # Get all current columns in the DataFrame, then sort them but keep "File Name" first
+            all_excel_cols_present = [col for col in df_for_excel.columns if col != "File Name"]
+            sorted_excel_cols = ["File Name"] + sorted(all_excel_cols_present)
             
-            df_for_excel = df_for_excel[[col for col in all_excel_cols if col in df_for_excel.columns]]
+            df_for_excel = df_for_excel[[col for col in sorted_excel_cols if col in df_for_excel.columns]]
             
             df_for_excel.to_excel(writer, index=False, sheet_name='InvoiceSummary')
 
