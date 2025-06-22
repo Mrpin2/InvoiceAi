@@ -451,7 +451,8 @@ st.markdown("""
     .st-emotion-cache-h5rpjc .stTextInput > label > div > p,
     .st-emotion-cache-h5rpjc .stTextInput > div > div > input,
     .st-emotion-cache-h5rpjc .stTextInput > div > div > textarea,
-    .st-emotion-cache-h5rpjc .stMarkdown p {
+    .st-emotion-cache-h5rpjc .stMarkdown p,
+    .st-emotion-cache-h5rpjc .stCheckbox span { /* Explicitly target checkbox span in sidebar */
         color: var(--text-color) !important; 
     }
     /* Adjust input backgrounds in sidebar */
@@ -475,9 +476,6 @@ st.markdown("""
     .st-emotion-cache-h5rpjc .stCheckbox > label > div:first-child > div:first-child[data-checked="true"] {
         background-color: var(--primary-color) !important;
         border-color: var(--primary-color) !important;
-    }
-    .st-emotion-cache-h5rpjc .stCheckbox span { /* Checkbox label text */
-        color: var(--text-color) !important;
     }
 
 
