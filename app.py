@@ -1,5 +1,5 @@
 import streamlit as st
-from pydantic import BaseModel, Field, create_model # create_model for dynamic Pydantic
+from pydantic import BaseModel, Field, create_model
 from typing import List, Optional, Union, Dict, Any
 import pandas as pd
 import os
@@ -46,7 +46,9 @@ class LineItem(BaseModel):
     gross_worth: float
 
 class Invoice(BaseModel):
-    invoice_number: Optional[str] = Field(None, description="The unique identifier of the invoice. Extract as is.")
+    # This comprehensive model serves as a reference for common fields and their types
+    # It also holds detailed descriptions for prompt generation.
+    invoice_number: Optional[str] = Field(None, description="The unique identifier of the invoice.")
     date: Optional[str] = Field(None, description="The invoice date in DD/MM/YYYY format. If year is 2-digit, assume current century (e.g., 24 -> 2024).")
     gstin: Optional[str] = Field(None, description="The GSTIN of the seller (the entity issuing the invoice). Must be a 15-character alphanumeric string. Prioritize the GSTIN explicitly labeled as 'GSTIN' or associated with the seller's main details.")
     seller_name: Optional[str] = Field(None, description="The name of the seller (the entity issuing the invoice).")
@@ -67,28 +69,37 @@ class Invoice(BaseModel):
     rcm_applicability: Optional[str] = Field(None, description="Reverse Charge Mechanism (RCM) applicability. State 'Yes', 'No', or 'Uncertain'.")
 
 # A mapping from user-friendly names to Pydantic field names and their descriptions
-# This dictionary will be used for both display and prompt generation
-FIELD_DESCRIPTIONS = {
-    "Invoice Number": ("invoice_number", "The unique identifier of the invoice."),
-    "Invoice Date": ("date", "The invoice date in DD/MM/YYYY format. If year is 2-digit, assume current century (e.g., 24 -> 2024)."),
-    "Seller GSTIN": ("gstin", "The GSTIN of the seller (the entity issuing the invoice). Must be a 15-character alphanumeric string."),
-    "Seller Name": ("seller_name", "The name of the seller (the entity issuing the invoice)."),
-    "Buyer Name": ("buyer_name", "The name of the buyer (the entity receiving the invoice)."),
-    "Buyer GSTIN": ("buyer_gstin", "The GSTIN of the buyer (the entity receiving the invoice). Must be a 15-character alphanumeric string."),
-    "Taxable Amount": ("taxable_amount", "The subtotal, the amount BEFORE any taxes (CGST, SGST, IGST) are applied. Must be a number."),
-    "CGST": ("cgst", "The Central Goods and Services Tax amount. Must be a number."),
-    "SGST": ("sgst", "The State Goods and Services Tax amount. Must be a number."),
-    "IGST": ("igst", "The Integrated Goods and Services Tax amount. Must be a number."),
-    "Total Amount Payable (Incl. Tax)": ("total_amount_payable", "The final total amount on the invoice *including all taxes and other charges*, but *before* any TDS deduction shown on the invoice. This represents the 'Gross Total' or 'Amount before TDS' on the invoice. Must be a number."),
-    "TDS Amount": ("tds_amount", "The numerical value of TDS deducted, if explicitly stated."),
-    "TDS Rate": ("tds_rate", "The numerical percentage rate of TDS deducted (e.g., '10' for 10%), if explicitly stated. Infer standard rate if section known."),
-    "Line Items": ("line_items", "A list of line items, each with 'description', 'quantity', and 'gross_worth'. Provide an empty list if no line items are found."),
-    "Place of Supply": ("place_of_supply", "The Place of Supply (e.g., 'Delhi', 'Maharashtra', or 'Foreign')."),
-    "Expense Ledger": ("expense_ledger", "Classify the nature of expense and suggest a suitable ledger type (e.g., 'Office Supplies', 'Professional Fees', 'Software Subscription'). Consider common TDS sections for inference."),
-    "TDS Applicability": ("tds", "TDS applicability (e.g., 'Yes - Section 194J', 'No', 'Uncertain')."),
-    "HSN/SAC Code": ("hsn_sac", "The HSN (goods) or SAC (services) code. ONLY extract if explicitly mentioned. If not found, MUST be `null`."),
-    "RCM Applicability": ("rcm_applicability", "Reverse Charge Mechanism (RCM) applicability. State 'Yes', 'No', or 'Uncertain'.")
+# This will be used to look up detailed descriptions for prompt generation.
+FIELD_METADATA = {
+    "Invoice Number": {"field_name": "invoice_number", "description": "The unique identifier of the invoice."},
+    "Invoice Date": {"field_name": "date", "description": "The invoice date in DD/MM/YYYY format. If year is 2-digit, assume current century (e.g., 24 -> 2024)."},
+    "Seller GSTIN": {"field_name": "gstin", "description": "The GSTIN of the seller (the entity issuing the invoice). Must be a 15-character alphanumeric string. Prioritize the GSTIN explicitly labeled as 'GSTIN' or associated with the seller's main details."},
+    "Seller Name": {"field_name": "seller_name", "description": "The name of the seller (the entity issuing the invoice)."},
+    "Buyer Name": {"field_name": "buyer_name", "description": "The name of the buyer (the entity receiving the invoice)."},
+    "Buyer GSTIN": {"field_name": "buyer_gstin", "description": "The GSTIN of the buyer (the entity receiving the invoice). Must be a 15-character alphanumeric string. Prioritize the GSTIN explicitly labeled as 'Buyer GSTIN' or associated with the buyer's details."},
+    "Taxable Amount": {"field_name": "taxable_amount", "description": "This is the subtotal, the amount BEFORE any taxes (CGST, SGST, IGST) are applied. Must be a number."},
+    "CGST": {"field_name": "cgst", "description": "The Central Goods and Services Tax amount. Must be a number."},
+    "SGST": {"field_name": "sgst", "description": "The State Goods and Services Tax amount. Must be a number."},
+    "IGST": {"field_name": "igst", "description": "The Integrated Goods and Services Tax amount. Must be a number."},
+    "Total Amount Payable (Incl. Tax)": {"field_name": "total_amount_payable", "description": "This is the final total amount on the invoice *including all taxes and other charges*, but *before* any TDS deduction shown on the invoice. This represents the 'Gross Total' or 'Amount before TDS' on the invoice. Must be a number."},
+    "TDS Amount": {"field_name": "tds_amount", "description": "The numerical value of TDS deducted, if explicitly stated."},
+    "TDS Rate": {"field_name": "tds_rate", "description": "The numerical percentage rate of TDS deducted (e.g., '10' for 10%), if explicitly stated. If a TDS Section is clearly identified but the rate is missing on the invoice, infer the standard rate for that section (e.g., 10% for 194J)."},
+    "Line Items": {"field_name": "line_items", "description": "A list of line items, each with 'description', 'quantity', and 'gross_worth'. Provide an empty list if no line items are found."},
+    "Place of Supply": {"field_name": "place_of_supply", "description": "The Place of Supply. Extract the exact State/City name or 'Foreign' if applicable. Prioritize 'Place of Supply' field, then 'Ship To', 'Bill To', 'Customer/Buyer Address'."},
+    "Expense Ledger": {"field_name": "expense_ledger", "description": "Classify the nature of expense and suggest a suitable ledger type (e.g., 'Office Supplies', 'Professional Fees', 'Software Subscription'). Consider common TDS sections for inference."},
+    "TDS Applicability": {"field_name": "tds", "description": "TDS applicability. 'Yes - Section [X]' if deducted, 'Yes - Section Unknown' if rate/amount present but no section, 'No' if not applicable or foreign transaction, 'Uncertain' if unclear."},
+    "HSN/SAC Code": {"field_name": "hsn_sac", "description": "The HSN (Harmonized System of Nomenclature) or SAC (Service Accounting Code). ONLY extract if explicitly mentioned. If not found, MUST be `null`."},
+    "RCM Applicability": {"field_name": "rcm_applicability", "description": "Reverse Charge Mechanism (RCM) applicability. State 'Yes', 'No', or 'Uncertain'."}
 }
+
+# Define common fields that can be quickly added
+COMMON_FIELD_NAMES = [
+    "Invoice Number", "Invoice Date", "Seller Name", "Total Amount Payable (Incl. Tax)",
+    "Expense Ledger", "TDS Applicability", "Seller GSTIN", "Buyer Name", "Buyer GSTIN",
+    "Taxable Amount", "CGST", "SGST", "IGST", "TDS Amount", "TDS Rate", "HSN/SAC Code",
+    "Place of Supply", "RCM Applicability", "Line Items"
+]
+
 
 # --- Utility Functions for UI/Data Formatting ---
 def parse_date_safe(date_str: str) -> str:
@@ -129,7 +140,7 @@ def load_lottie_url(url: str):
         return None
 
 # --- Dynamic Prompt Generation ---
-def generate_dynamic_prompt(selected_fields: List[str], extraction_type: str) -> str:
+def generate_dynamic_prompt(selected_fields_display_names: List[str], extraction_type: str) -> str:
     if extraction_type == "Free-form Summary":
         return (
             "You are an expert at summarizing Indian invoices. "
@@ -146,23 +157,28 @@ def generate_dynamic_prompt(selected_fields: List[str], extraction_type: str) ->
         "If a key's value is not explicitly present or derivable from the invoice, use `null` for that value. "
     ]
 
-    required_keys = []
     field_guidelines = []
-    for field_display_name in selected_fields:
-        field_name, description = FIELD_DESCRIPTIONS.get(field_display_name, (None, None))
-        if field_name:
-            required_keys.append(field_name)
-            field_guidelines.append(f"- '{field_name}': {description}")
-            if field_name == "line_items":
-                field_guidelines.append("  For `line_items`, each item must have 'description', 'quantity', 'gross_worth'.")
+    
+    # Prioritize fields from FIELD_METADATA for detailed guidelines
+    for field_display_name in selected_fields_display_names:
+        metadata = FIELD_METADATA.get(field_display_name)
+        if metadata:
+            field_name_internal = metadata["field_name"]
+            description = metadata["description"]
+            field_guidelines.append(f"- '{field_name_internal}': {description}")
+            if field_name_internal == "line_items":
                 prompt_parts.append("You MUST include an empty list `[]` for `line_items` if no line items are found, do not use `null` for `line_items`. ")
+        else:
+            # For custom, user-defined fields, provide a generic guideline
+            field_guidelines.append(f"- '{field_display_name}': Extract the value as it appears in the invoice.")
 
+    # Ensure all selected fields are listed as required keys for the LLM
+    required_keys_for_llm = [FIELD_METADATA.get(f, {}).get("field_name", f) for f in selected_fields_display_names]
 
-    if not required_keys:
-        # Fallback if no fields are selected for structured extraction, though UI prevents this
+    if not required_keys_for_llm:
         return "Extract common invoice details like invoice_number, date, seller_name, total_amount_payable."
 
-    prompt_parts.append(f"Keys to extract: {', '.join(required_keys)}. ")
+    prompt_parts.append(f"Keys to extract: {', '.join(required_keys_for_llm)}. ")
     prompt_parts.append("\nGUIDELINES FOR EXTRACTION:\n")
     prompt_parts.extend(field_guidelines)
     prompt_parts.append("\nReturn 'NOT AN INVOICE' if the document is clearly not an invoice.\n")
@@ -171,23 +187,28 @@ def generate_dynamic_prompt(selected_fields: List[str], extraction_type: str) ->
 
 
 # --- Dynamic Pydantic Schema Generation ---
-def create_dynamic_invoice_schema(selected_fields: List[str]) -> BaseModel:
+def create_dynamic_invoice_schema(selected_fields_display_names: List[str]) -> BaseModel:
     fields = {}
-    for field_display_name in selected_fields:
-        field_name, _ = FIELD_DESCRIPTIONS.get(field_display_name)
-        if field_name == "line_items":
-            fields[field_name] = (List[LineItem], Field(default_factory=list))
-        elif field_name in Invoice.model_fields: # Pydantic v2 way to check and get field info
-            original_field = Invoice.model_fields.get(field_name)
-            if original_field:
-                fields[field_name] = (original_field.annotation, Field(None, description=original_field.description))
+    for field_display_name in selected_fields_display_names:
+        metadata = FIELD_METADATA.get(field_display_name)
+        if metadata:
+            field_name_internal = metadata["field_name"]
+            if field_name_internal == "line_items":
+                fields[field_name_internal] = (List[LineItem], Field(default_factory=list))
+            elif field_name_internal in Invoice.model_fields:
+                original_field = Invoice.model_fields.get(field_name_internal)
+                if original_field:
+                    fields[field_name_internal] = (original_field.annotation, Field(None, description=original_field.description))
+                else:
+                    fields[field_name_internal] = (Optional[str], None) # Fallback
             else:
-                fields[field_name] = (Optional[str], None) # Fallback
-        else: # Fallback if field not found in original Invoice model
-            fields[field_name] = (Optional[str], None)
+                fields[field_name_internal] = (Optional[str], None) # Fallback for unknown internal names
+        else:
+            # For truly custom fields, default to Optional[str]
+            fields[field_display_name] = (Optional[str], None)
 
     if not fields:
-        # If no fields are selected (e.g., if user somehow bypasses validation), create a minimal schema
+        # If no fields are selected, create a minimal schema for basic extraction
         fields["invoice_number"] = (Optional[str], None)
         fields["date"] = (Optional[str], None)
         fields["total_amount_payable"] = (Optional[float], None)
@@ -375,59 +396,100 @@ st.set_page_config(layout="wide", page_title="📄 AI Invoice Extractor (Dynamic
 # Custom CSS for a bit more flair and font consistency
 st.markdown("""
 <style>
+    @import url('https://fonts.googleapis.com/css2?family=Roboto:wght@300;400;700&display=swap');
+
     body {
-        font-family: 'Roboto', 'Helvetica Neue', Arial, sans-serif;
+        font-family: 'Roboto', sans-serif;
     }
     .stApp { 
-        background-color: #f0f2f6; 
+        background-color: #f0f2f6; /* Light gray background */
         color: #333333; 
-        font-family: 'Roboto', 'Helvetica Neue', Arial, sans-serif; 
+        font-family: 'Roboto', sans-serif; 
     }
-    h1, h2, h3 { 
-        color: #1e3a8a; 
-        font-family: 'Roboto', 'Helvetica Neue', Arial, sans-serif; 
+    h1, h2, h3, h4, h5, h6 { 
+        color: #1a237e; /* Darker blue for headings */
+        font-family: 'Roboto', sans-serif; 
+        font-weight: 700; /* Bold headings */
     }
     .stButton>button {
-        background-color: #3b82f6; 
+        background-color: #4285f4; /* Google Blue */
         color: white; 
-        border-radius: 8px;
-        padding: 10px 20px; 
-        font-size: 16px; 
+        border-radius: 12px; /* More rounded corners */
+        padding: 12px 25px; /* Slightly larger padding */
+        font-size: 17px; 
         font-weight: bold;
-        transition: background-color 0.3s ease;
-        font-family: 'Roboto', 'Helvetica Neue', Arial, sans-serif;
+        transition: background-color 0.3s ease, transform 0.2s ease; /* Smooth transition */
+        font-family: 'Roboto', sans-serif;
+        border: none; /* No default border */
+        box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1); /* Subtle shadow */
     }
     .stButton>button:hover { 
-        background-color: #2563eb; 
+        background-color: #357ae8; /* Darker blue on hover */
+        transform: translateY(-2px); /* Slight lift effect */
+        box-shadow: 0 6px 12px rgba(0, 0, 0, 0.15);
     }
+    /* Style for 'Remove' buttons in field list */
+    .stButton>button[kind="secondaryFormSubmit"] {
+        background-color: #ef5350; /* Red for remove */
+        color: white;
+        border-radius: 8px;
+        padding: 5px 10px;
+        font-size: 14px;
+        font-weight: normal;
+        margin-left: 10px;
+        box-shadow: none;
+        transition: background-color 0.3s ease;
+    }
+    .stButton>button[kind="secondaryFormSubmit"]:hover {
+        background-color: #d32f2f; /* Darker red on hover */
+        transform: none;
+        box-shadow: none;
+    }
+
     .stMarkdown p { 
         font-size: 1.05em; 
         line-height: 1.6; 
-        font-family: 'Roboto', 'Helvetica Neue', Arial, sans-serif; 
+        font-family: 'Roboto', sans-serif; 
         color: #333333;
     }
     .stAlert { 
         border-radius: 8px; 
-        font-family: 'Roboto', 'Helvetica Neue', Arial, sans-serif; 
+        font-family: 'Roboto', sans-serif; 
+        padding: 15px 20px;
+        line-height: 1.5;
     }
     .stAlert.success { 
-        background-color: #e8f5e9; 
-        color: #2e7d32; 
+        background-color: #e8f5e9; /* Light green */
+        color: #2e7d32; /* Dark green */
+        border: 1px solid #a5d6a7;
     }
     .stAlert.error { 
-        background-color: #ffebee; 
-        color: #c62828; 
+        background-color: #ffebee; /* Light red */
+        color: #c62828; /* Dark red */
+        border: 1px solid #ef9a9a;
+    }
+    .stAlert.info { /* Make info alerts more prominent blue */
+        background-color: #e3f2fd; /* Light blue */
+        color: #1976d2; /* Darker blue */
+        border: 1px solid #90caf9;
+    }
+    .stAlert.warning {
+        background-color: #fffde7; /* Light yellow */
+        color: #fbc02d; /* Dark yellow */
+        border: 1px solid #ffe082;
     }
     .stProgress > div > div > div > div { 
-        background-color: #3b82f6 !important; 
+        background-color: #4285f4 !important; /* Google Blue progress bar */
+        border-radius: 8px;
     }
+    /* Card-like effects for sections */
     .main .block-container {
         padding-top: 3rem;
         padding-right: 3rem;
         padding-left: 3rem;
         padding-bottom: 3rem;
     }
-    div[data-testid="stMarkdownContainer"]:has(p:first-child:contains("Instructions:")) {
+    div[data-testid="stVerticalBlock"] > div[data-testid="stMarkdownContainer"] {
         background-color: white;
         padding: 25px;
         border-radius: 12px;
@@ -435,22 +497,68 @@ st.markdown("""
         margin-bottom: 25px;
         border: 1px solid #e0e0e0;
     }
-    div[data-testid="stDataFrame"] {
-        background-color: white;
-        padding: 20px;
-        border-radius: 12px;
+    /* Style for expander headers to make them look like cards too */
+    .streamlit-expanderHeader {
+        background-color: white !important;
+        border-radius: 12px !important;
         box-shadow: 0 4px 10px rgba(0, 0, 0, 0.08);
-        margin-bottom: 20px;
+        margin-bottom: 15px; /* Space below header */
         border: 1px solid #e0e0e0;
+        padding: 15px 20px !important;
+        color: #1a237e;
+        font-weight: bold;
+    }
+    /* Content inside expander, remove extra padding from internal block */
+    .streamlit-expanderContent {
+        background-color: white; /* Match expander header background */
+        border-bottom-left-radius: 12px;
+        border-bottom-right-radius: 12px;
+        box-shadow: 0 4px 10px rgba(0, 0, 0, 0.08);
+        padding: 20px; /* Adjust content padding */
+        border: 1px solid #e0e0e0;
+        border-top: none; /* No top border, connects to header */
+        margin-bottom: 25px;
+    }
+    /* Adjustments for st.dataframe within cards */
+    div[data-testid="stDataFrame"] {
+        background-color: #fcfcfc; /* Slightly off-white for dataframes */
+        border-radius: 8px; /* Slightly less rounded than main cards */
+        box-shadow: 0 2px 5px rgba(0,0,0,0.05); /* Lighter shadow */
+        border: 1px solid #eee;
+    }
+    /* Custom field tag styling */
+    .field-tag {
+        display: inline-flex;
+        align-items: center;
+        background-color: #e3f2fd; /* Light blue tag background */
+        color: #1976d2; /* Dark blue text */
+        border-radius: 20px;
+        padding: 5px 12px;
+        margin: 5px 5px;
+        font-size: 0.9em;
+        font-weight: 500;
+        border: 1px solid #90caf9;
+    }
+    .field-tag .remove-button {
+        background: none;
+        border: none;
+        color: #1976d2;
+        font-size: 1.1em;
+        margin-left: 8px;
+        cursor: pointer;
+        transition: color 0.2s;
+    }
+    .field-tag .remove-button:hover {
+        color: #d32f2f; /* Red on hover */
     }
 </style>
 """, unsafe_allow_html=True)
 
 
 st.title("📄 AI Invoice Extractor (Dynamic & Multi-Model)")
-st.divider()
+st.markdown("---") # Visually separates title
 
-st.sidebar.header("Configuration")
+st.sidebar.header("⚙️ Configuration")
 
 # --- Admin Panel for using secrets ---
 try:
@@ -481,7 +589,7 @@ else:
 
 # Model Selection
 model_choice = st.sidebar.radio(
-    "Choose AI Model:",
+    "✨ Choose AI Model:",
     ("Google Gemini", "OpenAI GPT"),
     key="model_choice"
 )
@@ -498,7 +606,7 @@ if use_secrets_keys_for_llms:
             st.sidebar.warning("GEMINI_API_KEY not found in Streamlit Secrets. Gemini functionality might be limited.")
         st.sidebar.text_input("Gemini Model ID (from secrets):", model_id_input, key="gemini_model_id_secrets", disabled=True)
         st.sidebar.caption(f"Using model ID from secrets: `{model_id_input}`")
-        st.sidebar.info(f"Using {model_choice} API Key from `Streamlit Secrets`.")
+        st.sidebar.info(f"Using *{model_choice}* API Key from `Streamlit Secrets`.")
 
     elif model_choice == "OpenAI GPT":
         selected_api_key = st.secrets.get("OPENAI_API_KEY")
@@ -507,12 +615,12 @@ if use_secrets_keys_for_llms:
             st.sidebar.warning("OPENAI_API_KEY not found in Streamlit Secrets. OpenAI functionality might be limited.")
         st.sidebar.text_input("OpenAI Model ID (from secrets):", model_id_input, key="openai_model_id_secrets", disabled=True)
         st.sidebar.caption(f"Using model ID from secrets: `{model_id_input}`")
-        st.sidebar.info(f"Using {model_choice} API Key from `Streamlit Secrets`.")
+        st.sidebar.info(f"Using *{model_choice}* API Key from `Streamlit Secrets`.")
 
 else:
     st.sidebar.markdown("---")
-    st.sidebar.subheader("Enter Your Own API Key (Required) 👇")
-    st.sidebar.markdown(f"To use the {model_choice} model, please provide your personal API key. Your key is used for processing and **not stored**.")
+    st.sidebar.subheader("🔑 Enter Your Own API Key (Required)")
+    st.sidebar.markdown(f"To use the *{model_choice}* model, please provide your personal API key. Your key is used for processing and **not stored**.")
 
     if model_choice == "Google Gemini":
         selected_api_key = st.sidebar.text_input("Enter your Gemini API Key:", type="password", key="gemini_key_manual")
@@ -525,71 +633,126 @@ else:
         model_id_input = st.sidebar.text_input("OpenAI Model ID:", DEFAULT_OPENAI_MODEL_ID, key="openai_model_id_manual")
         st.sidebar.caption(f"Default is `{DEFAULT_OPENAI_MODEL_ID}`. Ensure it's a vision model and supports JSON output.")
 
-st.markdown(
-    f"""
-    **Instructions:**
-    - Select your preferred AI model ({model_choice}) in the sidebar.
-    - **API Key Required:** To run the extraction, you'll need to provide your own API key in the sidebar. Your key is used for processing and **not stored**.
-    - If you are an administrator, you can enter the admin password in the sidebar to enable debug features and use pre-configured API keys (if set in Streamlit secrets).
-    - Choose an **Extraction Type**: `Structured Data Extraction` allows you to select specific fields, `Free-form Summary` provides a narrative.
-    - **Custom Prompt (Optional):** If you provide a custom prompt, it will override the selected extraction type and fields.
-    - Upload one or more PDF invoice files.
-    - Click 'Process Invoices' to extract data.
-      The extracted data will be displayed in a table and available for download as Excel.
-    """
-)
+# --- Main App Content ---
+with st.expander("📝 How to Use This Extractor", expanded=True):
+    st.markdown(
+        """
+        - Select your preferred AI model in the sidebar.
+        - **API Key Required:** Provide your own API key in the sidebar. Your key is used for processing and **not stored**.
+        - **Choose an Extraction Type:**
+            - **`Structured Data Extraction`**: Define exact columns you need.
+            - **`Free-form Summary`**: Get a natural language overview.
+        - **Custom Prompt (Optional):** This overrides all other settings. Use it for highly specific or experimental extractions.
+        - Upload one or more PDF invoice files.
+        - Click 'Process Invoices' to see results.
+        """
+    )
+    st.info("💡 **Recommendation:** Use **Google Gemini** for **scanned or blurred documents**, and **OpenAI GPT** for **system-generated (clear) PDF invoices**.")
 
-st.divider()
+st.markdown("---") # Separator
 
-# --- New: Extraction Type Selection ---
+# Initialize session state for custom fields if not present
+if 'custom_extracted_fields' not in st.session_state:
+    st.session_state.custom_extracted_fields = []
+
+# --- Extraction Type Selection ---
 extraction_type = st.radio(
-    "Select Extraction Type:",
+    "📊 **Select Extraction Type:**",
     ("Structured Data Extraction", "Free-form Summary"),
     key="extraction_type_selection"
 )
 
-selected_fields_for_extraction = []
 if extraction_type == "Structured Data Extraction":
-    st.markdown("### Choose Fields for Structured Data Extraction")
-    st.info("Select the specific invoice details you wish to extract. Only these fields will be requested from the AI model.")
-    # Get all user-friendly field names from our FIELD_DESCRIPTIONS
-    all_available_fields = list(FIELD_DESCRIPTIONS.keys())
-    
-    # Pre-select common fields as a default
-    default_fields = [
-        "Invoice Number", "Invoice Date", "Seller Name", "Total Amount Payable (Incl. Tax)",
-        "Expense Ledger", "TDS Applicability"
-    ]
-    # Ensure default fields exist in all_available_fields before setting as default
-    default_fields = [f for f in default_fields if f in all_available_fields]
+    with st.expander("🛠️ Define Your Desired Columns (Structured Data)", expanded=True):
+        st.markdown("Here, you can build your custom list of fields you want to extract.")
 
-    selected_fields_for_extraction = st.multiselect(
-        "Select fields to extract:",
-        options=all_available_fields,
-        default=default_fields,
-        help="Type to search and select specific data points (columns) you want the AI to extract from the invoices. 'Line Items' will extract a nested table.",
-        key="selected_fields_multiselect"
-    )
-    if not selected_fields_for_extraction:
-        st.warning("No fields selected for structured extraction. Please select at least one field, or provide a custom prompt.")
+        col1_add, col2_add = st.columns([0.7, 0.3])
+        with col1_add:
+            new_custom_field_name = st.text_input("✍️ **Add Custom Field:**", placeholder="e.g., 'Company Address', 'Shipping Date'", key="new_custom_field_name")
+        with col2_add:
+            st.markdown("<div style='height: 28px;'></div>", unsafe_allow_html=True) # Spacer
+            if st.button("➕ Add Field", key="add_field_button"):
+                if new_custom_field_name and new_custom_field_name not in st.session_state.custom_extracted_fields:
+                    st.session_state.custom_extracted_fields.append(new_custom_field_name)
+                    st.toast(f"Added '{new_custom_field_name}' to your fields!")
+                else:
+                    st.warning("Please enter a unique field name.")
+                st.session_state.new_custom_field_name = "" # Clear input
+
+        st.markdown("---")
+        st.subheader("🚀 Quick Add Common Fields")
+        st.markdown("Check the boxes below to quickly add common invoice data points to your list.")
         
+        # Display common fields in columns
+        num_cols_common = 4
+        cols = st.columns(num_cols_common)
+        for i, field in enumerate(COMMON_FIELD_NAMES):
+            with cols[i % num_cols_common]:
+                if st.checkbox(field, key=f"common_field_checkbox_{field}"):
+                    if field not in st.session_state.custom_extracted_fields:
+                        st.session_state.custom_extracted_fields.append(field)
+                        st.rerun() # Rerun to update the list immediately after checking
+
+        st.markdown("---")
+        st.subheader("📋 Your Selected Fields:")
+        if st.session_state.custom_extracted_fields:
+            # Display selected fields with remove buttons
+            cols_per_row = 3
+            current_cols = st.columns(cols_per_row)
+            col_idx = 0
+            fields_to_keep = []
+            
+            for field in st.session_state.custom_extracted_fields:
+                with current_cols[col_idx]:
+                    container = st.container(border=True) # Use a container for better grouping
+                    tag_html = f"""
+                    <div class='field-tag'>
+                        <span>{field}</span>
+                        <button class='remove-button' data-field='{field}' id='remove_{field}'>&times;</button>
+                    </div>
+                    """
+                    container.markdown(tag_html, unsafe_allow_html=True)
+                    # Check if remove button was clicked (via JavaScript injection trick)
+                    # This relies on Streamlit's internal mechanism for button clicks
+                    if st.session_state.get(f'remove_{field}', False):
+                        st.session_state[f'remove_{field}'] = False # Reset click state
+                    else:
+                        fields_to_keep.append(field) # Keep if not clicked
+
+                col_idx = (col_idx + 1) % cols_per_row
+            
+            # Update the session state list if any fields were removed
+            if len(fields_to_keep) < len(st.session_state.custom_extracted_fields):
+                st.session_state.custom_extracted_fields = fields_to_keep
+                st.rerun() # Rerun to reflect changes immediately
+            
+            if not st.session_state.custom_extracted_fields:
+                st.info("No fields selected yet. Add some above!")
+            
+            selected_fields_for_extraction = st.session_state.custom_extracted_fields
+        else:
+            selected_fields_for_extraction = []
+            st.info("No fields defined for structured extraction. Add some above using the input box or quick-add common fields.")
+            
 # --- Custom Prompt Input ---
 st.markdown("---")
-st.subheader("Custom Prompt (Optional)")
-custom_prompt_input = st.text_area(
-    "Enter your custom prompt here (e.g., 'Extract the buyer's name and address as a JSON.').",
-    height=150,
-    help="If a custom prompt is provided, it will override the selected Extraction Type and fields. For structured output, ensure your prompt asks for JSON.",
-    key="custom_prompt_textarea"
-)
-if custom_prompt_input:
-    st.info("Custom prompt provided. This will supersede all other extraction settings.")
+with st.expander("✍️ Custom Prompt (Advanced)", expanded=False):
+    st.info("Enter your own prompt to completely control the AI's output. This overrides the 'Extraction Type' and 'Defined Columns'.")
+    st.markdown("_For structured output with a custom prompt, ensure your prompt explicitly asks for JSON data!_")
+    custom_prompt_input = st.text_area(
+        "Your Custom Prompt:",
+        height=150,
+        placeholder="e.g., 'Extract the sender's full legal name and their registered office address as a JSON object with keys `legal_name` and `address`.'",
+        key="custom_prompt_textarea"
+    )
+    if custom_prompt_input:
+        st.warning("⚠️ Custom prompt provided. This will supersede all other extraction settings!")
 
 
-st.markdown("&nbsp;") # Small vertical space
+st.markdown("---") # Separator before file uploader
 
 uploaded_files = st.file_uploader(
-    "Choose PDF invoice files",
+    "📂 **Choose PDF Invoice Files**",
     type="pdf",
     accept_multiple_files=True
 )
@@ -614,7 +777,7 @@ if st.button("🚀 Process Invoices", type="primary"):
     elif not model_id_input:
         st.error(f"Please specify a {model_choice} Model ID in the sidebar.")
     elif extraction_type == "Structured Data Extraction" and not selected_fields_for_extraction and not custom_prompt_input:
-        st.error("For 'Structured Data Extraction', please select at least one field to extract, or provide a custom prompt.")
+        st.error("For 'Structured Data Extraction', please define at least one field, or provide a custom prompt.")
     else:
         client_initialized = False
         if model_choice == "Google Gemini":
@@ -655,20 +818,23 @@ if st.button("🚀 Process Invoices", type="primary"):
             progress_bar = st.progress(0)
             total_files = len(uploaded_files)
 
-            # Determine the prompt and schema to use
+            # Determine the prompt and schema to use based on custom prompt precedence
             prompt_to_use = custom_prompt_input if custom_prompt_input else generate_dynamic_prompt(selected_fields_for_extraction, extraction_type)
             
             dynamic_pydantic_schema = None
-            # If custom prompt is used, and it's for structured, we still try to validate
-            if custom_prompt_input and extraction_type == "Structured Data Extraction":
-                st.warning("When using a custom prompt with 'Structured Data Extraction', ensure your prompt instructs the model to return a JSON object with keys matching your selected fields. Validation will be attempted.")
-                try:
-                    dynamic_pydantic_schema = create_dynamic_invoice_schema(selected_fields_for_extraction)
-                except Exception as e:
-                    st.error(f"Failed to create dynamic schema for custom prompt validation: {e}")
-                    if st.session_state.DEBUG_MODE: st.exception(e)
-                    st.stop()
+            # If custom prompt is used AND structured extraction is implicitly or explicitly targeted, try to create a schema
+            if custom_prompt_input and extraction_type == "Structured Data Extraction": # Assume custom prompt for structured implies user wants validation
+                # With a custom prompt, we create a schema based on selected fields IF they were provided.
+                # Otherwise, it's a completely open-ended custom prompt, and we won't validate with Pydantic for strictness.
+                if selected_fields_for_extraction:
+                    try:
+                        dynamic_pydantic_schema = create_dynamic_invoice_schema(selected_fields_for_extraction)
+                    except Exception as e:
+                        st.error(f"Failed to create dynamic schema for custom prompt validation: {e}")
+                        if st.session_state.DEBUG_MODE: st.exception(e)
+                        st.stop()
             elif extraction_type == "Structured Data Extraction" and not custom_prompt_input:
+                # Standard structured extraction path
                 try:
                     dynamic_pydantic_schema = create_dynamic_invoice_schema(selected_fields_for_extraction)
                 except Exception as e:
@@ -713,25 +879,29 @@ if st.button("🚀 Process Invoices", type="primary"):
                             row_data = {"File Name": uploaded_file_obj.name}
                             
                             # Determine effective fields to use for display/excel.
-                            # If custom prompt, we just use whatever was returned.
-                            # If not custom, we use selected_fields_for_extraction.
-                            effective_fields = selected_fields_for_extraction if not custom_prompt_input else list(extracted_output.keys())
-                            if custom_prompt_input and "line_items" in effective_fields:
-                                st.warning("Custom prompt was used and 'line_items' was found. This will be shown in a separate expander.")
+                            # If custom prompt was used, we display ALL keys returned by LLM
+                            # If not custom prompt, we use the fields selected by the user
+                            effective_fields_for_this_row = selected_fields_for_extraction if not custom_prompt_input else list(extracted_output.keys())
+                            
+                            if custom_prompt_input and "line_items" in effective_fields_for_this_row:
+                                st.info("Custom prompt was used and 'line_items' was found. This will be shown in a separate expander.")
 
-                            # Populate data based on selected fields and apply formatting
-                            for field_display_name in effective_fields:
-                                # Try to map display name to internal field name for existing fields
-                                field_name_internal = FIELD_DESCRIPTIONS.get(field_display_name, (field_display_name, None))[0]
-                                value = extracted_output.get(field_name_internal, extracted_output.get(field_display_name, None)) # Try both keys
+                            # Populate data based on effective fields and apply formatting
+                            for field_display_name in effective_fields_for_this_row:
+                                # First, try to get the internal field name from metadata, otherwise use display name directly
+                                metadata = FIELD_METADATA.get(field_display_name)
+                                field_name_internal = metadata["field_name"] if metadata else field_display_name
+                                
+                                # Get the value from the extracted dict using the internal name or display name
+                                value = extracted_output.get(field_name_internal, extracted_output.get(field_display_name, None))
 
                                 if field_name_internal == "date":
                                     row_data[field_display_name] = parse_date_safe(value or "")
                                 elif field_name_internal in ["taxable_amount", "cgst", "sgst", "igst", "total_amount_payable", "tds_amount"]:
                                     row_data[field_display_name] = value if value is not None else 0.0
                                 elif field_name_internal == "tds_rate":
-                                    # New: Infer TDS rate if section is known and rate is missing from LLM response
-                                    tds_section_val = extracted_output.get("tds") # Raw TDS applicability string
+                                    # Logic to infer TDS rate if TDS Applicability was also extracted
+                                    tds_section_val = extracted_output.get(FIELD_METADATA["TDS Applicability"]["field_name"]) if "TDS Applicability" in selected_fields_for_extraction else None
                                     tds_section_display = "N/A"
                                     if isinstance(tds_section_val, str) and "section" in tds_section_val.lower():
                                         parts = tds_section_val.split("Section ")
@@ -745,41 +915,36 @@ if st.button("🚀 Process Invoices", type="primary"):
                                     if inferred_tds_rate == "N/A" and tds_section_display != "N/A":
                                         if tds_section_display == "194J":
                                             inferred_tds_rate = 10.0 # Standard rate for professional fees
-                                    # Store the (potentially inferred) rate
                                     row_data[field_display_name] = inferred_tds_rate
 
-                                elif field_name_internal == "tds":
-                                    # Adjust TDS if Place of Supply is 'Foreign' or LLM explicitly says 'No'
-                                    pos_val = extracted_output.get("place_of_supply")
+                                elif field_name_internal == "tds": # This is "TDS Applicability"
+                                    pos_val = extracted_output.get(FIELD_METADATA["Place of Supply"]["field_name"]) if "Place of Supply" in selected_fields_for_extraction else None
                                     if pos_val and pos_val.lower() == "foreign":
                                         row_data[field_display_name] = "No"
-                                        # Also ensure TDS amount/rate are 0/N/A if foreign
-                                        if "tds_amount" in extracted_output:
-                                            row_data[FIELD_DESCRIPTIONS.get("TDS Amount")[0]] = 0.0
-                                        if "tds_rate" in extracted_output:
-                                            row_data[FIELD_DESCRIPTIONS.get("TDS Rate")[0]] = "N/A"
-                                        if "TDS Section (Derived)" in extracted_output: # Needs a mapping for this
-                                            row_data["TDS Section (Derived)"] = "N/A"
+                                        # Adjust related fields if applicable
+                                        if FIELD_METADATA["TDS Amount"]["field_name"] in extracted_output:
+                                            row_data[FIELD_METADATA["TDS Amount"]["field_name"]] = 0.0
+                                        if FIELD_METADATA["TDS Rate"]["field_name"] in extracted_output:
+                                            row_data[FIELD_METADATA["TDS Rate"]["field_name"]] = "N/A"
+                                        # Note: TDS Section (Derived) is added below, so it will be affected by this
                                         st.info(f"TDS adjusted to 'No' for **{uploaded_file_obj.name}** as Place of Supply is 'Foreign'.")
                                     elif value and value.lower() == "no":
                                         row_data[field_display_name] = "No"
-                                        if "tds_amount" in extracted_output:
-                                            row_data[FIELD_DESCRIPTIONS.get("TDS Amount")[0]] = 0.0
-                                        if "tds_rate" in extracted_output:
-                                            row_data[FIELD_DESCRIPTIONS.get("TDS Rate")[0]] = "N/A"
-                                        if "TDS Section (Derived)" in extracted_output:
-                                            row_data["TDS Section (Derived)"] = "N/A"
+                                        if FIELD_METADATA["TDS Amount"]["field_name"] in extracted_output:
+                                            row_data[FIELD_METADATA["TDS Amount"]["field_name"]] = 0.0
+                                        if FIELD_METADATA["TDS Rate"]["field_name"] in extracted_output:
+                                            row_data[FIELD_METADATA["TDS Rate"]["field_name"]] = "N/A"
                                     else:
                                         row_data[field_display_name] = value or "N/A"
 
                                 elif field_name_internal == "line_items":
-                                    # Line items will be processed separately for display in expander
-                                    pass # Don't add directly to main row_data
-                                else:
-                                    row_data[field_display_name] = value or "N/A" # Default for other fields
+                                    pass # Handled separately
 
-                            # Special handling for "TDS Section (Derived)" if it's not a direct field but derived
-                            if "TDS Applicability" in (selected_fields_for_extraction if not custom_prompt_input else extracted_output.keys()):
+                                else:
+                                    row_data[field_display_name] = value or "N/A"
+
+                            # Always add TDS Section (Derived) if TDS Applicability was chosen or explicitly extracted by custom prompt
+                            if ("TDS Applicability" in effective_fields_for_this_row or "tds" in extracted_output):
                                 tds_section_display_val = "N/A"
                                 if "tds" in extracted_output and isinstance(extracted_output["tds"], str) and "section" in extracted_output["tds"].lower():
                                     parts = extracted_output["tds"].split("Section ")
@@ -788,20 +953,21 @@ if st.button("🚀 Process Invoices", type="primary"):
                                         section_part = section_part.split(' ')[0].split(']')[0].split('.')[0].strip()
                                         if section_part:
                                             tds_section_display_val = section_part
-                                row_data["TDS Section (Derived)"] = tds_section_display_val # Use a distinct name for derived field
-
+                                row_data["TDS Section (Derived)"] = tds_section_display_val
 
                             st.session_state.extracted_results.append({
                                 "file_name": uploaded_file_obj.name,
-                                "extraction_type": "structured", # Indicate type for later processing
+                                "extraction_type": "structured",
                                 "extracted_data": row_data,
-                                "line_items": extracted_output.get("line_items", []) # Store line items separately
+                                "raw_extracted_dict": extracted_output, # Store raw dict for debug/line items
+                                "selected_fields_at_extraction": effective_fields_for_this_row # Store what was actually requested/returned
                             })
 
                             with st.expander(f"📋 Details for {uploaded_file_obj.name} (using {model_choice})"):
                                 st.subheader("Extracted Raw JSON Data:")
                                 st.json(extracted_output) # Show raw extracted JSON for verification
 
+                                # Display line items if they were extracted and are present
                                 if "line_items" in extracted_output and extracted_output["line_items"]:
                                     st.subheader("Line Items:")
                                     line_item_data = [{
@@ -810,15 +976,15 @@ if st.button("🚀 Process Invoices", type="primary"):
                                         "Gross Worth": format_currency(item.get("gross_worth")),
                                     } for item in extracted_output["line_items"]]
                                     st.dataframe(pd.DataFrame(line_item_data), use_container_width=True)
-                                elif "Line Items" in (selected_fields_for_extraction if not custom_prompt_input else extracted_output.keys()):
+                                elif "Line Items" in effective_fields_for_this_row:
                                     st.info("No line items extracted.")
                                 else:
-                                    st.info("Line items were not selected for extraction or not found in custom prompt output.")
+                                    st.info("Line items were not requested for extraction.")
                         
                         elif isinstance(extracted_output, str): # Free-form Summary Output
                             st.session_state.extracted_results.append({
                                 "file_name": uploaded_file_obj.name,
-                                "extraction_type": "summary", # Indicate type
+                                "extraction_type": "summary",
                                 "summary_text": extracted_output
                             })
                             st.success(f"Summary for {uploaded_file_obj.name} generated.")
@@ -849,99 +1015,93 @@ if st.button("🚀 Process Invoices", type="primary"):
 
 if st.session_state.extracted_results:
     st.divider()
-    st.subheader("📊 Consolidated Extracted Invoice Summary")
+    st.header("📊 Consolidated Extracted Invoice Summary")
     
     # Separate structured vs. summary results
     structured_results = [r for r in st.session_state.extracted_results if r["extraction_type"] == "structured"]
     summary_results = [r for r in st.session_state.extracted_results if r["extraction_type"] == "summary"]
 
     if structured_results:
-        st.markdown("#### Structured Data Results")
+        st.subheader("📋 Structured Data Results")
+        
+        # Collect all unique column names that appeared in any structured result
+        all_unique_structured_cols = set()
+        for result in structured_results:
+            all_unique_structured_cols.update(result["extracted_data"].keys())
+        
+        # Sort these column names for consistent display, with "File Name" first
+        display_cols_order = ["File Name"] + sorted([col for col in list(all_unique_structured_cols) if col != "File Name"])
+
         summary_rows_for_display = []
         for result in structured_results:
-            file_name = result["file_name"]
-            extracted_data_dict = result["extracted_data"]
-            
-            # Create a display row, including formatting
-            display_row = {"File Name": file_name}
-            
-            # Determine which columns to display for this specific file,
-            # especially if a custom prompt was used
-            columns_to_display = list(extracted_data_dict.keys())
-            if "File Name" in columns_to_display:
-                columns_to_display.remove("File Name") # Remove as it's added separately
-            
-            for col_key in columns_to_display:
-                value = extracted_data_dict.get(col_key, "N/A")
+            row_to_add = {"File Name": result["file_name"]}
+            for col_key in display_cols_order:
+                if col_key == "File Name": continue # Already added
+                value = result["extracted_data"].get(col_key, "N/A") # Get value, default to N/A
+
+                # Apply formatting
+                # We need to map back to original field names to check types if it's a "common field"
+                is_common_field_numeric = False
+                for display_name, metadata in FIELD_METADATA.items():
+                    if metadata["field_name"] == col_key or display_name == col_key: # Check both internal and display names
+                        if metadata["field_name"] in ["taxable_amount", "cgst", "sgst", "igst", "tds_amount", "total_amount_payable"]:
+                            is_common_field_numeric = True
+                            break
                 
-                # Apply formatting based on known field types if possible
-                if col_key in [FIELD_DESCRIPTIONS["Taxable Amount"][0], FIELD_DESCRIPTIONS["CGST"][0],
-                               FIELD_DESCRIPTIONS["SGST"][0], FIELD_DESCRIPTIONS["IGST"][0],
-                               FIELD_DESCRIPTIONS["TDS Amount"][0], FIELD_DESCRIPTIONS["Total Amount Payable (Incl. Tax)"][0]]:
-                    display_row[col_key] = format_currency(value if value != "N/A" else None)
-                elif col_key == FIELD_DESCRIPTIONS["TDS Rate"][0]:
-                    display_row[col_key] = f"{value:.2f}%" if isinstance(value, (int, float)) else value
+                if is_common_field_numeric:
+                    row_to_add[col_key] = format_currency(value if value != "N/A" else None)
+                elif col_key == FIELD_METADATA["TDS Rate"]["field_name"] or col_key == "TDS Rate": # Explicitly handle TDS Rate
+                    row_to_add[col_key] = f"{value:.2f}%" if isinstance(value, (int, float)) else value
                 else:
-                    display_row[col_key] = value
-            
-            summary_rows_for_display.append(display_row)
+                    row_to_add[col_key] = value
+            summary_rows_for_display.append(row_to_add)
 
         df_display = pd.DataFrame(summary_rows_for_display)
-
-        # Reorder columns for display if original selection was structured and no custom prompt
-        if not custom_prompt_input and extraction_type == "Structured Data Extraction":
-            desired_display_order = ["File Name"] + selected_fields_for_extraction
-            if "TDS Applicability" in selected_fields_for_extraction:
-                desired_display_order.append("TDS Section (Derived)")
-            desired_display_order = [col for col in desired_display_order if col != "Line Items"]
-            
-            # Filter df_display to only include desired columns and reorder them
-            actual_display_columns_present = [col for col in desired_display_order if col in df_display.columns]
-            df_display = df_display[actual_display_columns_present]
-
+        # Ensure the display order is respected
+        df_display = df_display[[col for col in display_cols_order if col in df_display.columns]]
         st.dataframe(df_display, use_container_width=True)
 
         # --- Excel Download for Structured Data ---
         output_excel = io.BytesIO()
         with pd.ExcelWriter(output_excel, engine='openpyxl') as writer:
-            # Prepare a DataFrame for Excel export using raw values (not formatted strings)
             excel_data_rows = []
             for result in structured_results:
                 row = {"File Name": result["file_name"]}
-                # Add all extracted_data fields to the row for Excel
-                for k, v in result["extracted_data"].items():
-                    row[k] = v
+                # For Excel, we take all raw extracted data, not just formatted display ones
+                for k, v in result["raw_extracted_dict"].items():
+                    # Map internal field names back to their display names for Excel headers
+                    display_name_found = next((d_name for d_name, meta in FIELD_METADATA.items() if meta["field_name"] == k), k)
+                    row[display_name_found] = v
+                # Also add the derived TDS Section explicitly for Excel
+                if "TDS Section (Derived)" in result["extracted_data"]:
+                    row["TDS Section (Derived)"] = result["extracted_data"]["TDS Section (Derived)"]
                 excel_data_rows.append(row)
             
             df_for_excel = pd.DataFrame(excel_data_rows)
 
-            # Drop 'Line Items' column from the main sheet if it exists
-            if "Line Items" in df_for_excel.columns:
-                df_for_excel = df_for_excel.drop(columns=["Line Items"])
-
-            # Sort columns based on FIELD_DESCRIPTIONS order if not custom prompt, else alphabetical
-            if not custom_prompt_input and extraction_type == "Structured Data Extraction":
-                # Create a comprehensive list of all possible columns in order of FIELD_DESCRIPTIONS
-                all_possible_ordered_columns = ["File Name"] + list(FIELD_DESCRIPTIONS.keys())
-                if "TDS Applicability" in selected_fields_for_extraction: # Add derived field if applicable
-                    all_possible_ordered_columns.append("TDS Section (Derived)")
-                
-                # Filter to only columns actually present in df_for_excel and maintain order
-                final_excel_columns = [col for col in all_possible_ordered_columns if col in df_for_excel.columns]
-                df_for_excel = df_for_excel[final_excel_columns]
-            else:
-                # If custom prompt or other type, just use current columns (will be somewhat arbitrary order)
-                pass # No special reordering
-
+            # Sort Excel columns for consistency
+            all_excel_cols = ["File Name"] + sorted([col for col in df_for_excel.columns if col not in ["File Name", "line_items"]])
+            if "Line Items" in FIELD_METADATA or (custom_prompt_input and "line_items" in df_for_excel.columns):
+                # We need to remove line_items if it's treated as a column in the main DF for Excel export
+                # but it's handled in a separate sheet.
+                if "line_items" in all_excel_cols:
+                    all_excel_cols.remove("line_items")
+                if FIELD_METADATA["Line Items"]["field_name"] in all_excel_cols:
+                    all_excel_cols.remove(FIELD_METADATA["Line Items"]["field_name"])
+            
+            df_for_excel = df_for_excel[[col for col in all_excel_cols if col in df_for_excel.columns]]
+            
             df_for_excel.to_excel(writer, index=False, sheet_name='InvoiceSummary')
 
-            # Add Line Items to a separate sheet if selected/extracted
-            if any(item.get("line_items") for item in structured_results) and \
-               ("Line Items" in selected_fields_for_extraction or (custom_prompt_input and any("line_items" in r["extracted_data"] for r in structured_results))):
+            # Add Line Items to a separate sheet if they were extracted
+            any_line_items_extracted = any(item.get("line_items") for item in structured_results if item.get("raw_extracted_dict"))
+            if any_line_items_extracted:
                 all_line_items = []
                 for result in structured_results:
                     file_name = result["file_name"]
-                    for li in result.get("line_items", []): # Use .get with default empty list
+                    # Access line_items from raw_extracted_dict for fidelity
+                    raw_line_items = result.get("raw_extracted_dict", {}).get("line_items", [])
+                    for li in raw_line_items:
                         all_line_items.append({
                             "File Name": file_name,
                             "Description": li.get("description"),
@@ -950,7 +1110,7 @@ if st.session_state.extracted_results:
                         })
                 if all_line_items:
                     df_line_items = pd.DataFrame(all_line_items)
-                    df_line_items.to_excel(writer, index=False, sheet_name='LineItems') # FIX: Closing parenthesis added here!
+                    df_line_items.to_excel(writer, index=False, sheet_name='LineItems')
 
         excel_data = output_excel.getvalue()
 
@@ -962,7 +1122,7 @@ if st.session_state.extracted_results:
         )
     
     if summary_results:
-        st.markdown("#### Free-form Summaries")
+        st.subheader("📚 Free-form Summaries")
         summary_df_data = []
         for result in summary_results:
             summary_df_data.append({
