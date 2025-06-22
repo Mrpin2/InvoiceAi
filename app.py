@@ -489,7 +489,8 @@ st.markdown("""
         padding-left: 3rem;
         padding-bottom: 3rem;
     }
-    div[data-testid="stVerticalBlock"] > div[data-testid="stMarkdownContainer"] {
+    /* Specific styling for st.container which is used for sections */
+    div.stContainer {
         background-color: white;
         padding: 25px;
         border-radius: 12px;
@@ -654,6 +655,10 @@ st.markdown("---") # Separator
 # Initialize session state for custom fields if not present
 if 'custom_extracted_fields' not in st.session_state:
     st.session_state.custom_extracted_fields = []
+# Initialize the value for the text input for adding new fields
+if 'new_custom_field_input_value' not in st.session_state:
+    st.session_state.new_custom_field_input_value = ""
+
 
 # --- Extraction Type Selection ---
 extraction_type = st.radio(
@@ -668,17 +673,24 @@ if extraction_type == "Structured Data Extraction":
 
         col1_add, col2_add = st.columns([0.7, 0.3])
         with col1_add:
-            new_custom_field_name = st.text_input("✍️ **Add Custom Field:**", placeholder="e.g., 'Company Address', 'Shipping Date'", key="new_custom_field_name")
+            # Use the session state variable to control the input's value
+            new_field_input = st.text_input(
+                "✍️ **Add Custom Field:**",
+                placeholder="e.g., 'Company Address', 'Shipping Date'",
+                key="new_custom_field_input", # This key is for the widget itself
+                value=st.session_state.new_custom_field_input_value # Control its value
+            )
         with col2_add:
             st.markdown("<div style='height: 28px;'></div>", unsafe_allow_html=True) # Spacer
             if st.button("➕ Add Field", key="add_field_button"):
-                if new_custom_field_name and new_custom_field_name not in st.session_state.custom_extracted_fields:
-                    st.session_state.custom_extracted_fields.append(new_custom_field_name)
-                    st.toast(f"Added '{new_custom_field_name}' to your fields!")
+                if new_field_input and new_field_input not in st.session_state.custom_extracted_fields:
+                    st.session_state.custom_extracted_fields.append(new_field_input)
+                    st.toast(f"Added '{new_field_input}' to your fields!")
+                    st.session_state.new_custom_field_input_value = "" # Clear the input value in session state
+                    st.rerun() # Rerun to update the display and clear input
                 else:
                     st.warning("Please enter a unique field name.")
-                st.session_state.new_custom_field_name = "" # Clear input
-
+        
         st.markdown("---")
         st.subheader("🚀 Quick Add Common Fields")
         st.markdown("Check the boxes below to quickly add common invoice data points to your list.")
@@ -688,10 +700,25 @@ if extraction_type == "Structured Data Extraction":
         cols = st.columns(num_cols_common)
         for i, field in enumerate(COMMON_FIELD_NAMES):
             with cols[i % num_cols_common]:
+                # Use a callback to add/remove fields immediately
                 if st.checkbox(field, key=f"common_field_checkbox_{field}"):
                     if field not in st.session_state.custom_extracted_fields:
                         st.session_state.custom_extracted_fields.append(field)
                         st.rerun() # Rerun to update the list immediately after checking
+        
+        # This part handles removing fields if the checkbox is unchecked
+        # (needs to be separate from the add logic to avoid race conditions with rerun)
+        fields_to_remove_from_common_unchecked = []
+        for field in st.session_state.custom_extracted_fields:
+            if field in COMMON_FIELD_NAMES and not st.session_state.get(f"common_field_checkbox_{field}", False):
+                 fields_to_remove_from_common_unchecked.append(field)
+        
+        if fields_to_remove_from_common_unchecked:
+            for field in fields_to_remove_from_common_unchecked:
+                if field in st.session_state.custom_extracted_fields:
+                    st.session_state.custom_extracted_fields.remove(field)
+            st.rerun()
+
 
         st.markdown("---")
         st.subheader("📋 Your Selected Fields:")
@@ -700,32 +727,37 @@ if extraction_type == "Structured Data Extraction":
             cols_per_row = 3
             current_cols = st.columns(cols_per_row)
             col_idx = 0
-            fields_to_keep = []
+            
+            # Temporary list to hold fields that are NOT removed in this run
+            fields_after_removal_attempt = [] 
             
             for field in st.session_state.custom_extracted_fields:
                 with current_cols[col_idx]:
-                    container = st.container(border=True) # Use a container for better grouping
-                    tag_html = f"""
-                    <div class='field-tag'>
-                        <span>{field}</span>
-                        <button class='remove-button' data-field='{field}' id='remove_{field}'>&times;</button>
-                    </div>
-                    """
-                    container.markdown(tag_html, unsafe_allow_html=True)
-                    # Check if remove button was clicked (via JavaScript injection trick)
-                    # This relies on Streamlit's internal mechanism for button clicks
-                    if st.session_state.get(f'remove_{field}', False):
-                        st.session_state[f'remove_{field}'] = False # Reset click state
-                    else:
-                        fields_to_keep.append(field) # Keep if not clicked
+                    # Using a form for each button to isolate the button click
+                    with st.form(key=f"remove_form_{field}", clear_on_submit=False):
+                        tag_html = f"""
+                        <div class='field-tag'>
+                            <span>{field}</span>
+                            <button type="submit" class='remove-button' name="remove_button_{field}">&times;</button>
+                        </div>
+                        """
+                        st.markdown(tag_html, unsafe_allow_html=True)
+                        submitted = st.form_submit_button(label="Invisible Submit", help="Click to remove this field", key=f"submit_remove_{field}") # Hidden submit button
+
+                        if submitted:
+                            # This field was requested to be removed, so don't add it to fields_after_removal_attempt
+                            st.toast(f"Removed '{field}'.")
+                            st.rerun() # Rerun to update the display
+                        else:
+                            # If the form was not submitted for this field, keep it
+                            fields_after_removal_attempt.append(field)
 
                 col_idx = (col_idx + 1) % cols_per_row
             
-            # Update the session state list if any fields were removed
-            if len(fields_to_keep) < len(st.session_state.custom_extracted_fields):
-                st.session_state.custom_extracted_fields = fields_to_keep
-                st.rerun() # Rerun to reflect changes immediately
-            
+            # Update the session state list only after iterating through all fields
+            # This logic avoids issues if multiple items are removed in one go (though st.rerun handles most cases)
+            st.session_state.custom_extracted_fields = fields_after_removal_attempt
+
             if not st.session_state.custom_extracted_fields:
                 st.info("No fields selected yet. Add some above!")
             
@@ -957,7 +989,7 @@ if st.button("🚀 Process Invoices", type="primary"):
 
                             st.session_state.extracted_results.append({
                                 "file_name": uploaded_file_obj.name,
-                                "extraction_type": "structured",
+                                "extraction_type": "structured", # Indicate type for later processing
                                 "extracted_data": row_data,
                                 "raw_extracted_dict": extracted_output, # Store raw dict for debug/line items
                                 "selected_fields_at_extraction": effective_fields_for_this_row # Store what was actually requested/returned
@@ -1079,6 +1111,10 @@ if st.session_state.extracted_results:
             
             df_for_excel = pd.DataFrame(excel_data_rows)
 
+            # Drop 'Line Items' column from the main sheet if it exists
+            if "Line Items" in df_for_excel.columns:
+                df_for_excel = df_for_excel.drop(columns=["Line Items"])
+
             # Sort Excel columns for consistency
             all_excel_cols = ["File Name"] + sorted([col for col in df_for_excel.columns if col not in ["File Name", "line_items"]])
             if "Line Items" in FIELD_METADATA or (custom_prompt_input and "line_items" in df_for_excel.columns):
@@ -1094,7 +1130,7 @@ if st.session_state.extracted_results:
             df_for_excel.to_excel(writer, index=False, sheet_name='InvoiceSummary')
 
             # Add Line Items to a separate sheet if they were extracted
-            any_line_items_extracted = any(item.get("line_items") for item in structured_results if item.get("raw_extracted_dict"))
+            any_line_items_extracted = any(item.get("raw_extracted_dict", {}).get("line_items") for item in structured_results)
             if any_line_items_extracted:
                 all_line_items = []
                 for result in structured_results:
