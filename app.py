@@ -110,10 +110,10 @@ def parse_date_safe(date_str: str) -> str:
     for fmt in formats:
         try:
             dt_obj = datetime.strptime(date_str, fmt)
-            # Adjust 2-digit years. Current year 2025. If year is 24, assume 2024. If 98, assume 1998.
-            current_century_prefix = (datetime.now().year // 100) * 100
+            # Adjust 2-digit years. Current year (e.g., 2025). If year is 24, assume 2024. If 98, assume 1998.
             if dt_obj.year < 100: # 2-digit year
-                if dt_obj.year > (datetime.now().year % 100) + 10: # e.g., 90 in 2025 -> 1990
+                current_year_last_two_digits = datetime.now().year % 100
+                if dt_obj.year > current_year_last_two_digits + 10: # e.g., 90 in 2025 -> 1990 (heuristics)
                     dt_obj = dt_obj.replace(year=dt_obj.year + 1900)
                 else: # e.g., 24 in 2025 -> 2024
                     dt_obj = dt_obj.replace(year=dt_obj.year + 2000)
@@ -396,160 +396,254 @@ st.set_page_config(layout="wide", page_title="📄 AI Invoice Extractor (Dynamic
 # Custom CSS for a bit more flair and font consistency
 st.markdown("""
 <style>
-    @import url('https://fonts.googleapis.com/css2?family=Roboto:wght@300;400;700&display=swap');
+    @import url('https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;600;700&family=Inter:wght@300;400;500;600;700&display=swap');
+
+    :root {
+        --primary-color: #4A90E2; /* A vibrant blue */
+        --secondary-color: #50E3C2; /* A light teal for accents */
+        --text-color: #333333;
+        --heading-color: #1A237E; /* Dark blue for headings */
+        --background-color: #F0F2F6; /* Light grey background */
+        --card-background: white;
+        --border-color: #E0E0E0;
+        --shadow-color: rgba(0, 0, 0, 0.08);
+        --success-bg: #E8F5E9;
+        --success-text: #2E7D32;
+        --info-bg: #E3F2FD;
+        --info-text: #1976D2;
+        --warning-bg: #FFFDE7;
+        --warning-text: #FBC02D;
+        --error-bg: #FFEBE9; /* Lighter red for errors */
+        --error-text: #C62828;
+    }
 
     body {
-        font-family: 'Roboto', sans-serif;
-        color: #333333; /* Default text color */
+        font-family: 'Inter', sans-serif;
+        color: var(--text-color);
     }
     .stApp { 
-        background-color: #f0f2f6; /* Light gray background */
-        font-family: 'Roboto', sans-serif; 
+        background-color: var(--background-color); 
+        color: var(--text-color); 
+        font-family: 'Inter', sans-serif; 
     }
     h1, h2, h3, h4, h5, h6 { 
-        color: #1a237e; /* Darker blue for headings */
-        font-family: 'Roboto', sans-serif; 
-        font-weight: 700; /* Bold headings */
+        color: var(--heading-color); 
+        font-family: 'Poppins', sans-serif; 
+        font-weight: 700;
+        margin-top: 1.5rem;
+        margin-bottom: 1rem;
     }
+    h1 { font-size: 2.5rem; }
+    h2 { font-size: 2rem; }
+    h3 { font-size: 1.5rem; }
+
+    /* Sidebar Styling */
+    .st-emotion-cache-h5rpjc { /* This targets the sidebar container */
+        background-color: #262730; /* Darker background for sidebar */
+        color: white; /* White text in sidebar */
+    }
+    .st-emotion-cache-h5rpjc h1, .st-emotion-cache-h5rpjc h2, 
+    .st-emotion-cache-h5rpjc h3, .st-emotion-cache-h5rpjc h4 {
+        color: #B0C4DE; /* Lighter blue for sidebar headings */
+    }
+    .st-emotion-cache-h5rpjc .stRadio > label > div > div > p {
+        color: white !important; /* Ensure radio button labels are white */
+    }
+    .st-emotion-cache-h5rpjc .stTextInput > label > div > p {
+        color: white !important; /* Ensure text input labels are white */
+    }
+    .st-emotion-cache-h5rpjc .stTextInput > div > div > input {
+        background-color: #3b3b4f !important; /* Darker input background */
+        color: white !important;
+        border: 1px solid #5a5a6f !important;
+    }
+    .st-emotion-cache-h5rpjc .stRadio > label > div > div > div { /* For radio button circle */
+        border-color: white !important;
+    }
+    .st-emotion-cache-h5rpjc .stRadio > label > div > div > div[data-checked="true"] {
+        background-color: var(--primary-color) !important;
+        border-color: var(--primary-color) !important;
+    }
+
+    /* Main Content Buttons */
     .stButton>button {
-        background-color: #4285f4; /* Google Blue */
+        background-color: var(--primary-color);
         color: white; 
-        border-radius: 12px; /* More rounded corners */
-        padding: 12px 25px; /* Slightly larger padding */
-        font-size: 17px; 
-        font-weight: bold;
-        transition: background-color 0.3s ease, transform 0.2s ease; /* Smooth transition */
-        font-family: 'Roboto', sans-serif;
-        border: none; /* No default border */
-        box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1); /* Subtle shadow */
+        border-radius: 12px;
+        padding: 12px 25px;
+        font-size: 17px;
+        font-weight: 600; /* Medium bold */
+        transition: background-color 0.3s ease, transform 0.2s ease;
+        border: none;
+        box-shadow: 0 4px 8px var(--shadow-color);
     }
     .stButton>button:hover { 
-        background-color: #357ae8; /* Darker blue on hover */
-        transform: translateY(-2px); /* Slight lift effect */
+        background-color: #357AE8; /* Darker blue on hover */
+        transform: translateY(-2px);
         box-shadow: 0 6px 12px rgba(0, 0, 0, 0.15);
     }
-    /* Style for 'Remove' buttons in field list */
-    .stButton[data-testid="stFormSubmitButton"] button { /* Target specific submit buttons within forms */
-        background-color: #ef5350; /* Red for remove */
-        color: white;
+
+    /* Secondary Buttons (e.g., Remove 'x' button) */
+    .stButton[data-testid="stFormSubmitButton"] button, 
+    button[data-testid^="stButton-secondary"] { /* Target native secondary buttons */
+        background-color: #D1D1D1; /* Light grey for secondary actions */
+        color: var(--text-color);
         border-radius: 8px;
         padding: 5px 10px;
         font-size: 14px;
-        font-weight: normal;
+        font-weight: 500;
         margin-left: 10px;
         box-shadow: none;
         transition: background-color 0.3s ease;
     }
-    .stButton[data-testid="stFormSubmitButton"] button:hover {
-        background-color: #d32f2f; /* Darker red on hover */
+    button[data-testid^="stButton-secondary"]:hover {
+        background-color: #B0B0B0;
         transform: none;
         box-shadow: none;
     }
-    /* Ensure checkbox labels are visible */
-    .stCheckbox span {
-        color: #333333; /* Explicitly set color for checkbox labels */
+
+    /* Specific style for the remove 'x' buttons in selected fields */
+    .stButton[data-testid="stFormSubmitButton"] button {
+        background-color: #ef5350 !important; /* Red for remove */
+        color: white !important;
+        font-weight: bold;
     }
+    .stButton[data-testid="stFormSubmitButton"] button:hover {
+        background-color: #d32f2f !important; /* Darker red */
+    }
+
+
+    /* Text and Markdown */
     .stMarkdown p { 
         font-size: 1.05em; 
         line-height: 1.6; 
-        font-family: 'Roboto', sans-serif; 
-        color: #333333;
+        font-family: 'Inter', sans-serif; 
+        color: var(--text-color);
     }
     .stAlert { 
         border-radius: 8px; 
-        font-family: 'Roboto', sans-serif; 
+        font-family: 'Inter', sans-serif; 
         padding: 15px 20px;
         line-height: 1.5;
+        margin-bottom: 1rem; /* Space below alerts */
     }
-    .stAlert.success { 
-        background-color: #e8f5e9; /* Light green */
-        color: #2e7d32; /* Dark green */
-        border: 1px solid #a5d6a7;
-    }
-    .stAlert.error { 
-        background-color: #ffebee; /* Light red */
-        color: #c62828; /* Dark red */
-        border: 1px solid #ef9a9a;
-    }
-    .stAlert.info { /* Make info alerts more prominent blue */
-        background-color: #e3f2fd; /* Light blue */
-        color: #1976d2; /* Darker blue */
-        border: 1px solid #90caf9;
-    }
-    .stAlert.warning {
-        background-color: #fffde7; /* Light yellow */
-        color: #fbc02d; /* Dark yellow */
-        border: 1px solid #ffe082;
-    }
+    .stAlert.success { background-color: var(--success-bg); color: var(--success-text); border: 1px solid #A5D6A7; }
+    .stAlert.error { background-color: var(--error-bg); color: var(--error-text); border: 1px solid #EF9A9A; }
+    .stAlert.info { background-color: var(--info-bg); color: var(--info-text); border: 1px solid #90CAF9; }
+    .stAlert.warning { background-color: var(--warning-bg); color: var(--warning-text); border: 1px solid #FFE082; }
+
+    /* Progress Bar */
     .stProgress > div > div > div > div { 
-        background-color: #4285f4 !important; /* Google Blue progress bar */
+        background-color: var(--primary-color) !important; 
         border-radius: 8px;
     }
-    /* Card-like effects for sections */
+
+    /* Card-like Sections */
     .main .block-container {
-        padding-top: 3rem;
+        padding-top: 2rem;
         padding-right: 3rem;
         padding-left: 3rem;
         padding-bottom: 3rem;
     }
-    /* Specific styling for st.container which is used for sections */
+    /* Targets st.container for card styling */
     div.stContainer {
-        background-color: white;
+        background-color: var(--card-background);
         padding: 25px;
         border-radius: 12px;
-        box-shadow: 0 4px 10px rgba(0, 0, 0, 0.08);
-        margin-bottom: 25px;
-        border: 1px solid #e0e0e0;
+        box-shadow: 0 4px 15px var(--shadow-color);
+        margin-bottom: 2rem;
+        border: 1px solid var(--border-color);
     }
-    /* Style for expander headers to make them look like cards too */
+
+    /* Expander Headers as Cards */
     .streamlit-expanderHeader {
-        background-color: white !important;
+        background-color: var(--card-background) !important;
         border-radius: 12px !important;
-        box-shadow: 0 4px 10px rgba(0, 0, 0, 0.08);
-        margin-bottom: 15px; /* Space below header */
-        border: 1px solid #e0e0e0;
+        box-shadow: 0 4px 15px var(--shadow-color);
+        margin-bottom: 1rem;
+        border: 1px solid var(--border-color);
         padding: 15px 20px !important;
-        color: #1a237e;
-        font-weight: bold;
+        color: var(--heading-color) !important;
+        font-weight: 600 !important;
+        font-family: 'Poppins', sans-serif !important;
+        transition: all 0.2s ease-in-out;
     }
-    /* Content inside expander, remove extra padding from internal block */
+    .streamlit-expanderHeader:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 6px 20px rgba(0, 0, 0, 0.12);
+    }
+    /* Content inside expander */
     .streamlit-expanderContent {
-        background-color: white; /* Match expander header background */
+        background-color: var(--card-background);
         border-bottom-left-radius: 12px;
         border-bottom-right-radius: 12px;
-        box-shadow: 0 4px 10px rgba(0, 0, 0, 0.08);
-        padding: 20px; /* Adjust content padding */
-        border: 1px solid #e0e0e0;
-        border-top: none; /* No top border, connects to header */
-        margin-bottom: 25px;
+        box-shadow: 0 4px 15px var(--shadow-color);
+        padding: 20px;
+        border: 1px solid var(--border-color);
+        border-top: none;
+        margin-bottom: 2rem;
     }
-    /* Adjustments for st.dataframe within cards */
+    /* Dataframes within cards */
     div[data-testid="stDataFrame"] {
-        background-color: #fcfcfc; /* Slightly off-white for dataframes */
-        border-radius: 8px; /* Slightly less rounded than main cards */
-        box-shadow: 0 2px 5px rgba(0,0,0,0.05); /* Lighter shadow */
+        background-color: #fcfcfc;
+        border-radius: 8px;
+        box-shadow: 0 2px 5px rgba(0,0,0,0.05);
         border: 1px solid #eee;
     }
-    /* Styling for individual selected field rows */
+
+    /* Input Field Styling */
+    .stTextInput>div>div>input {
+        border-radius: 8px;
+        border: 1px solid var(--border-color);
+        padding: 10px 15px;
+        font-size: 1em;
+        color: var(--text-color);
+        background-color: #fcfcfc;
+        box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.06);
+    }
+    .stTextInput>div>div>textarea { /* For text_area */
+        border-radius: 8px;
+        border: 1px solid var(--border-color);
+        padding: 10px 15px;
+        font-size: 1em;
+        color: var(--text-color);
+        background-color: #fcfcfc;
+        box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.06);
+    }
+    .stTextInput>label>div>p, .stSelectbox>label>div>p, .stRadio>label>div>p {
+        font-weight: 600; /* Labels bold */
+        color: var(--heading-color);
+        margin-bottom: 0.5rem;
+    }
+
+    /* Selected Field Row */
     .selected-field-row {
         display: flex;
         justify-content: space-between;
         align-items: center;
         padding: 8px 12px;
-        margin-bottom: 5px;
-        background-color: #e9eff7; /* Light blueish background */
+        margin-bottom: 8px; /* More space between items */
+        background-color: #E6EEF7; /* Lighter blueish background */
         border-radius: 8px;
-        border: 1px solid #d3e0f0;
+        border: 1px solid #CBDCEB;
+        font-weight: 500;
+        color: var(--heading-color);
     }
     .selected-field-row strong {
-        color: #1a237e; /* Dark blue for field names */
+        color: var(--heading-color); /* Ensure strong text is dark blue */
     }
 </style>
 """, unsafe_allow_html=True)
 
 
 st.title("📄 AI Invoice Extractor (Dynamic & Multi-Model)")
-st.markdown("---") # Visually separates title
+st.markdown("""
+    <p style='font-size:1.2em; color:#666;'>
+        Empower your financial operations with intelligent invoice data extraction. 
+        Select your desired fields or provide a custom prompt, and let AI do the heavy lifting!
+    </p>
+""", unsafe_allow_html=True)
+st.markdown("---") # Visually separates title and intro
 
 st.sidebar.header("⚙️ Configuration")
 
@@ -581,6 +675,7 @@ else:
     use_secrets_keys_for_llms = False
 
 # Model Selection
+st.sidebar.markdown("---")
 model_choice = st.sidebar.radio(
     "✨ Choose AI Model:",
     ("Google Gemini", "OpenAI GPT"),
@@ -625,22 +720,6 @@ else:
         DEFAULT_OPENAI_MODEL_ID = "gpt-4o"
         model_id_input = st.sidebar.text_input("OpenAI Model ID:", DEFAULT_OPENAI_MODEL_ID, key="openai_model_id_manual")
         st.sidebar.caption(f"Default is `{DEFAULT_OPENAI_MODEL_ID}`. Ensure it's a vision model and supports JSON output.")
-
-# --- Main App Content ---
-with st.expander("📝 How to Use This Extractor", expanded=True):
-    st.markdown(
-        """
-        - Select your preferred AI model in the sidebar.
-        - **API Key Required:** Provide your own API key in the sidebar. Your key is used for processing and **not stored**.
-        - **Choose an Extraction Type:**
-            - **`Structured Data Extraction`**: Define exact columns you need.
-            - **`Free-form Summary`**: Get a natural language overview.
-        - **Custom Prompt (Optional):** This overrides all other settings. Use it for highly specific or experimental extractions.
-        - Upload one or more PDF invoice files.
-        - Click 'Process Invoices' to see results.
-        """
-    )
-    st.info("💡 **Recommendation:** Use **Google Gemini** for **scanned or blurred documents**, and **OpenAI GPT** for **system-generated (clear) PDF invoices**.")
 
 st.markdown("---") # Separator
 
@@ -716,7 +795,7 @@ if extraction_type == "Structured Data Extraction":
         st.subheader("📋 Your Selected Fields:")
         if st.session_state.custom_extracted_fields:
             # Display selected fields with remove buttons
-            with st.container(): # Use a container for the list of fields
+            with st.container(border=True): # Use a container for the list of fields
                 for i, field in enumerate(st.session_state.custom_extracted_fields):
                     col_name, col_remove = st.columns([0.8, 0.2])
                     with col_name:
