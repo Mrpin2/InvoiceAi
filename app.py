@@ -84,7 +84,7 @@ FIELD_DESCRIPTIONS = {
     "TDS Rate": ("tds_rate", "The numerical percentage rate of TDS deducted (e.g., '10' for 10%), if explicitly stated. Infer standard rate if section known."),
     "Line Items": ("line_items", "A list of line items, each with 'description', 'quantity', and 'gross_worth'. Provide an empty list if no line items are found."),
     "Place of Supply": ("place_of_supply", "The Place of Supply (e.g., 'Delhi', 'Maharashtra', or 'Foreign')."),
-    "Expense Ledger": ("expense_ledger", "Classify the nature of expense and suggest a suitable ledger type (e.g., 'Office Supplies', 'Professional Fees')."),
+    "Expense Ledger": ("expense_ledger", "Classify the nature of expense and suggest a suitable ledger type (e.g., 'Office Supplies', 'Professional Fees', 'Software Subscription'). Consider common TDS sections for inference."),
     "TDS Applicability": ("tds", "TDS applicability (e.g., 'Yes - Section 194J', 'No', 'Uncertain')."),
     "HSN/SAC Code": ("hsn_sac", "The HSN (goods) or SAC (services) code. ONLY extract if explicitly mentioned. If not found, MUST be `null`."),
     "RCM Applicability": ("rcm_applicability", "Reverse Charge Mechanism (RCM) applicability. State 'Yes', 'No', or 'Uncertain'.")
@@ -950,4 +950,39 @@ if st.session_state.extracted_results:
                         })
                 if all_line_items:
                     df_line_items = pd.DataFrame(all_line_items)
-                    df_line_items.to_excel(writer
+                    df_line_items.to_excel(writer, index=False, sheet_name='LineItems') # FIX: Closing parenthesis added here!
+
+        excel_data = output_excel.getvalue()
+
+        st.download_button(
+            label="📥 Download Consolidated Structured Data as Excel",
+            data=excel_data,
+            file_name="invoice_structured_summary.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+    
+    if summary_results:
+        st.markdown("#### Free-form Summaries")
+        summary_df_data = []
+        for result in summary_results:
+            summary_df_data.append({
+                "File Name": result["file_name"],
+                "Summary": result["summary_text"]
+            })
+        df_summary = pd.DataFrame(summary_df_data)
+        st.dataframe(df_summary, use_container_width=True)
+
+        output_excel_summary = io.BytesIO()
+        with pd.ExcelWriter(output_excel_summary, engine='openpyxl') as writer:
+            df_summary.to_excel(writer, index=False, sheet_name='InvoiceSummaries')
+        excel_data_summary = output_excel_summary.getvalue()
+
+        st.download_button(
+            label="📥 Download Summaries as Excel",
+            data=excel_data_summary,
+            file_name="invoice_summaries.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+
+elif not uploaded_files:
+    st.info("Upload PDF files and click 'Process Invoices' to see results.")
