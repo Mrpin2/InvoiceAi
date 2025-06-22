@@ -401,10 +401,11 @@ st.markdown("""
     :root {
         --primary-color: #4A90E2; /* A vibrant blue */
         --secondary-color: #50E3C2; /* A light teal for accents */
-        --text-color: #333333;
+        --text-color: #333333; /* Dark gray for general text */
         --heading-color: #1A237E; /* Dark blue for headings */
-        --background-color: #F0F2F6; /* Light grey background */
-        --card-background: white;
+        --background-color: #F0F2F6; /* Light grey main background */
+        --card-background: white; /* White background for cards/sections */
+        --sidebar-background: #F8F8F8; /* Very light gray for sidebar */
         --border-color: #E0E0E0;
         --shadow-color: rgba(0, 0, 0, 0.08);
         --success-bg: #E8F5E9;
@@ -413,7 +414,7 @@ st.markdown("""
         --info-text: #1976D2;
         --warning-bg: #FFFDE7;
         --warning-text: #FBC02D;
-        --error-bg: #FFEBE9; /* Lighter red for errors */
+        --error-bg: #FFEBE9;
         --error-text: #C62828;
     }
 
@@ -439,55 +440,69 @@ st.markdown("""
 
     /* Sidebar Styling */
     .st-emotion-cache-h5rpjc { /* This targets the sidebar container */
-        background-color: #262730; /* Darker background for sidebar */
-        color: white; /* White text in sidebar */
+        background-color: var(--sidebar-background); /* Light background for sidebar */
+        color: var(--text-color); /* Dark text in sidebar */
+        border-right: 1px solid var(--border-color);
     }
+    /* Ensure all text within sidebar is dark */
     .st-emotion-cache-h5rpjc h1, .st-emotion-cache-h5rpjc h2, 
-    .st-emotion-cache-h5rpjc h3, .st-emotion-cache-h5rpjc h4 {
-        color: #B0C4DE; /* Lighter blue for sidebar headings */
+    .st-emotion-cache-h5rpjc h3, .st-emotion-cache-h5rpjc h4,
+    .st-emotion-cache-h5rpjc .stRadio > label > div > div > p,
+    .st-emotion-cache-h5rpjc .stTextInput > label > div > p,
+    .st-emotion-cache-h5rpjc .stTextInput > div > div > input,
+    .st-emotion-cache-h5rpjc .stTextInput > div > div > textarea,
+    .st-emotion-cache-h5rpjc .stMarkdown p {
+        color: var(--text-color) !important; 
     }
-    .st-emotion-cache-h5rpjc .stRadio > label > div > div > p {
-        color: white !important; /* Ensure radio button labels are white */
+    /* Adjust input backgrounds in sidebar */
+    .st-emotion-cache-h5rpjc .stTextInput > div > div > input,
+    .st-emotion-cache-h5rpjc .stTextInput > div > div > textarea {
+        background-color: var(--card-background) !important; /* White input background */
+        border: 1px solid var(--border-color) !important;
     }
-    .st-emotion-cache-h5rpjc .stTextInput > label > div > p {
-        color: white !important; /* Ensure text input labels are white */
-    }
-    .st-emotion-cache-h5rpjc .stTextInput > div > div > input {
-        background-color: #3b3b4f !important; /* Darker input background */
-        color: white !important;
-        border: 1px solid #5a5a6f !important;
-    }
+    /* Radio button specific styling */
     .st-emotion-cache-h5rpjc .stRadio > label > div > div > div { /* For radio button circle */
-        border-color: white !important;
+        border-color: var(--text-color) !important; /* Dark border for unchecked */
     }
     .st-emotion-cache-h5rpjc .stRadio > label > div > div > div[data-checked="true"] {
         background-color: var(--primary-color) !important;
         border-color: var(--primary-color) !important;
     }
+    /* Checkbox specific styling in sidebar */
+    .st-emotion-cache-h5rpjc .stCheckbox > label > div:first-child > div:first-child { /* The checkbox box */
+        border-color: var(--text-color) !important;
+    }
+    .st-emotion-cache-h5rpjc .stCheckbox > label > div:first-child > div:first-child[data-checked="true"] {
+        background-color: var(--primary-color) !important;
+        border-color: var(--primary-color) !important;
+    }
+    .st-emotion-cache-h5rpjc .stCheckbox span { /* Checkbox label text */
+        color: var(--text-color) !important;
+    }
+
 
     /* Main Content Buttons */
     .stButton>button {
         background-color: var(--primary-color);
-        color: white; 
+        color: white; /* Keep white for primary buttons for contrast on blue */
         border-radius: 12px;
         padding: 12px 25px;
         font-size: 17px;
-        font-weight: 600; /* Medium bold */
+        font-weight: 600;
         transition: background-color 0.3s ease, transform 0.2s ease;
         border: none;
         box-shadow: 0 4px 8px var(--shadow-color);
     }
     .stButton>button:hover { 
-        background-color: #357AE8; /* Darker blue on hover */
+        background-color: #357AE8;
         transform: translateY(-2px);
         box-shadow: 0 6px 12px rgba(0, 0, 0, 0.15);
     }
 
     /* Secondary Buttons (e.g., Remove 'x' button) */
-    .stButton[data-testid="stFormSubmitButton"] button, 
     button[data-testid^="stButton-secondary"] { /* Target native secondary buttons */
         background-color: #D1D1D1; /* Light grey for secondary actions */
-        color: var(--text-color);
+        color: var(--text-color); /* Dark text for secondary buttons */
         border-radius: 8px;
         padding: 5px 10px;
         font-size: 14px;
@@ -503,12 +518,13 @@ st.markdown("""
     }
 
     /* Specific style for the remove 'x' buttons in selected fields */
-    .stButton[data-testid="stFormSubmitButton"] button {
+    /* This overrides the general secondary button for the 'x' button specifically */
+    button[data-testid^="stButton-secondary"][kind="secondaryFormSubmit"] {
         background-color: #ef5350 !important; /* Red for remove */
-        color: white !important;
+        color: white !important; /* Keep white on red for contrast */
         font-weight: bold;
     }
-    .stButton[data-testid="stFormSubmitButton"] button:hover {
+    button[data-testid^="stButton-secondary"][kind="secondaryFormSubmit"]:hover {
         background-color: #d32f2f !important; /* Darker red */
     }
 
